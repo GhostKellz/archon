@@ -1,7 +1,7 @@
 # 👻 Archon
 
-![Archon Concept](assets/icons/archon-concept.png)
-![Archon K1](assets/icons/archon-k1.png)
+<img src="assets/icons/archon-concept.png" alt="Archon Concept" width="150">
+<img src="assets/icons/archon-k1.png" alt="Archon K1" width="150">
 
 [![Rust](https://img.shields.io/badge/Built_with-Rust-orange?style=flat-square\&logo=rust)](https://www.rust-lang.org)
 [![GPU Optimized](https://img.shields.io/badge/NVIDIA-Accelerated-green?style=flat-square\&logo=nvidia)](https://developer.nvidia.com)
