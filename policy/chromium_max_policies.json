@@ -1,0 +1,35 @@
+{
+  "DnsOverHttpsMode": "secure",
+  "DnsOverHttpsTemplates": "{{DOH_TEMPLATE}}",
+  "SafeBrowsingProtectionLevel": 0,
+  "PasswordManagerEnabled": false,
+  "PasswordLeakDetectionEnabled": false,
+  "SpellcheckEnabled": true,
+  "SearchSuggestEnabled": false,
+  "AlternateErrorPagesEnabled": false,
+  "AutofillAddressEnabled": false,
+  "AutofillCreditCardEnabled": false,
+  "MetricsReportingEnabled": false,
+  "UrlKeyedAnonymizedDataCollectionEnabled": false,
+  "PrivacySandboxAdMeasurementEnabled": false,
+  "PrivacySandboxPromptEnabled": false,
+  "TopicsEnabled": false,
+  "FederatedLearningOfCohortsAllowed": false,
+  "AmbientAuthenticationInPrivateModesEnabled": false,
+  "ExtensionInstallForcelist": [
+    "cjpalhdlnbpafiamejdnhcphjbkeiagm",
+    "hlepfoohegkhhmjieoechaddaejaokhf"
+  ],
+  "ExtensionInstallAllowlist": [
+    "ldcpmobkmncbffgkmjmnhlbnppkhmpii"
+  ],
+  "BlockExternalExtensions": true,
+  "RemoteDebuggingAllowed": true,
+  "HardwareAccelerationModeEnabled": true,
+  "WebRtcUdpPortRange": "33000-34999",
+  "WebRtcLocalIpsAllowedUrls": [
+    "http://localhost",
+    "http://127.0.0.1"
+  ],
+  "DefaultBrowserSettingEnabled": false
+}

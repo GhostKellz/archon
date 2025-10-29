@@ -1,0 +1,46 @@
+# Default GN args for Chromium Max builds.
+# Tweak to match target hardware or release channels before running
+# tools/build/chromium_max_build.sh.
+
+target_os = "linux"
+target_cpu = "x64"
+
+is_debug = false
+is_component_build = false
+is_official_build = true
+symbol_level = 1
+blink_symbol_level = 0
+
+use_thin_lto = true
+use_lld = true
+use_rlib = false
+use_goma = false
+
+enable_nacl = false
+enable_print_preview = true
+ffmpeg_branding = "chromium"
+proprietary_codecs = false
+
+use_ozone = true
+ozone_auto_platforms = false
+ozone_platform = "wayland"
+ozone_extra_platforms = [ "x11" ]
+use_x11 = true
+chrome_pgo_phase = 0
+
+use_vaapi = true
+use_v4l2_codec = true
+rtc_use_pipewire = true
+rtc_pipewire_version = "0.3"
+
+enable_widevine = false
+rtc_enable_protobuf = false
+rtc_build_examples = false
+rtc_build_tools = false
+
+# Hardened sandbox defaults
+use_seccomp_bpf = true
+is_cfi = false
+cfi_cross_dso = false
+
+# Tweak GPU watchdog + telemetry toggles here as we refine the build.

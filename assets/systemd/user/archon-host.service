@@ -1,0 +1,34 @@
+[Unit]
+Description=Archon AI native messaging host
+Documentation=https://github.com/ghostkellz/archon/blob/main/docs/chromium_max.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/archon_host --listen 127.0.0.1:8805
+Restart=on-failure
+RestartSec=2
+Environment=RUST_LOG=info
+RuntimeDirectory=archon-host
+RuntimeDirectoryMode=0750
+WorkingDirectory=%h
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=true
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallFilter=~@mount @swap @reboot
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=%h/.cache/Archon %h/.config/Archon
+IPAddressAllow=127.0.0.1 ::1
+
+[Install]
+WantedBy=default.target

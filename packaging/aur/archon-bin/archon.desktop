@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Chromium Max (Archon)
+Comment=Launch Chromium with Archon Wayland and privacy defaults
+Exec=archon
+Terminal=false
+Type=Application
+Icon=archon
+Categories=Network;WebBrowser;
+StartupNotify=true
+StartupWMClass=Chromium
+Keywords=browser;web;chromium;archon;
+MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;x-scheme-handler/archon;x-scheme-handler/ipfs;x-scheme-handler/ipns;x-scheme-handler/ens;

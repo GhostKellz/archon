@@ -1,0 +1,32 @@
+{
+	"name": "Among Trees II",
+	"version": "1.0",
+	"description": "Hi, thanks for checking out this theme. Please let know what you like by hitting that button ! It's much appreciated. I make new themes daily, most my themes fit 1920 X 1080 resolution. I also make smaller resolution themes that are 1536 x 864. That are listed in the title.",
+	"manifest_version": 3,
+	"theme": {
+		"images": {
+			"theme_frame": "images/theme_frame.jpeg",
+			"theme_toolbar": "images/theme_toolbar.png",
+			"theme_tab_background": "images/theme_tab_background.png",
+			"theme_ntp_background": "images/theme_ntp_background.jpeg"
+		},
+		"colors": {
+			"frame": [222, 225, 230],
+			"toolbar": [59, 45, 100],
+			"tab_text": [126, 210, 221],
+			"tab_background_text": [126, 210, 221],
+			"bookmark_text": [126, 210, 221],
+			"ntp_background": [15, 1, 43],
+			"ntp_text": [33, 8, 83],
+			"ntp_link": [126, 210, 221],
+			"button_background": [25, 21, 58, 0.9]
+		},
+		"tints": {
+			"buttons": [0.55, 0.89, 0.65]
+		},
+		"properties": {
+			"ntp_background_alignment": "top",
+			"ntp_background_repeat": "no-repeat"
+		}
+	}
+}

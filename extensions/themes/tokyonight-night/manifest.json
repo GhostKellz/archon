@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Archon Tokyo Night (Night)",
+  "version": "1.0.0",
+  "description": "Chromium theme inspired by tokyonight.nvim's night palette: deep navy panels with cyan and mint highlights.",
+  "theme": {
+    "colors": {
+      "frame": [26, 27, 38],
+      "frame_inactive": [22, 22, 30],
+      "frame_incognito": [26, 27, 38],
+      "toolbar": [17, 26, 47],
+      "tab_background_text": [192, 202, 245],
+      "tab_background_incognito": [26, 27, 38],
+      "tab_background_incognito_text": [192, 202, 245],
+      "tab_text": [192, 202, 245],
+      "bookmark_text": [192, 202, 245],
+      "button_background": [45, 212, 191],
+      "ntp_background": [15, 24, 41],
+      "ntp_text": [192, 202, 245],
+      "ntp_link": [125, 207, 255],
+      "ntp_section_text": [192, 202, 245],
+      "ntp_section_link": [125, 207, 255],
+      "control_background": [22, 31, 54]
+    },
+    "properties": {
+      "ntp_logo_alternate": 1
+    }
+  }
+}

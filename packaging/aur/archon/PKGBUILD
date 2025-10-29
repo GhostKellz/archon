@@ -1,0 +1,153 @@
+pkgname=archon
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Archon - Chromium Max with managed policies and Wayland tuning (source build)"
+arch=('x86_64')
+url="https://github.com/ghostkellz/archon"
+license=('MIT')
+depends=('gtk3' 'nss' 'libxss' 'libdrm' 'mesa' 'libxrandr' 'libxdamage' 'libxinerama' 'libxml2' 'libcups' 'pciutils' 'wayland' 'libpulse' 'xdg-utils' 'desktop-file-utils' 'hicolor-icon-theme')
+makedepends=('cargo' 'git' 'clang' 'lld' 'ninja' 'gn' 'python' 'nodejs' 'cmake' 'gperf' 'yasm' 'mesa' 'pipewire' 'rust')
+provides=('chromium-max' 'archon')
+conflicts=('archon-bin')
+options=('!strip' '!lto')
+_chromium_ver=131.0.6778.9
+source=("archon-${pkgver}.tar.gz"::"https://github.com/ghostkellz/archon/archive/refs/tags/v${pkgver}.tar.gz"
+        "chromium-${_chromium_ver}.tar.xz"::"https://commondatastorage.googleapis.com/chromium-browser-official/chromium-${_chromium_ver}.tar.xz"
+        'archon.desktop')
+sha256sums=('SKIP'
+            'SKIP'
+            'SKIP')
+
+prepare() {
+    cd "${srcdir}"
+    rm -rf "archon-${pkgver}/chromium"
+    mkdir -p "archon-${pkgver}/chromium"
+    tar -xf "chromium-${_chromium_ver}.tar.xz"
+    mv "chromium-${_chromium_ver}" "archon-${pkgver}/chromium/src"
+
+    cd "archon-${pkgver}"
+    export CARGO_TARGET_DIR="${srcdir}/target"
+    cargo fetch --locked
+}
+
+build() {
+    cd "${srcdir}/archon-${pkgver}"
+    export CARGO_TARGET_DIR="${srcdir}/target"
+    cargo build --release --bin archon --bin archon_host --bin ghostdns
+
+    local build_args=(
+        --source "${PWD}/chromium/src"
+        --out out/archon-max
+        --logs-dir "${PWD}/chromium/logs"
+        --dist-dir "${PWD}/chromium/dist"
+    )
+
+    if [[ -n ${MAKEFLAGS:-} ]]; then
+        if [[ ${MAKEFLAGS} =~ -j([0-9]+) ]]; then
+            build_args+=(--jobs "${BASH_REMATCH[1]}")
+        fi
+    fi
+
+    ./tools/build/chromium_max_build.sh "${build_args[@]}"
+}
+
+check() {
+    cd "${srcdir}/archon-${pkgver}"
+    export CARGO_TARGET_DIR="${srcdir}/target"
+    cargo test --release
+}
+
+package() {
+    cd "${srcdir}/archon-${pkgver}"
+
+    install -Dm755 "${srcdir}/target/release/archon" "${pkgdir}/usr/bin/archon"
+    install -Dm755 "${srcdir}/target/release/archon_host" "${pkgdir}/usr/bin/archon_host"
+    install -Dm755 "${srcdir}/target/release/ghostdns" "${pkgdir}/usr/bin/ghostdns"
+
+    install -Dm644 "policy/chromium_max_policies.json" \
+        "${pkgdir}/usr/share/archon/policy/chromium_max_policies.json"
+    install -Dm644 "docs/chromium_max.md" \
+        "${pkgdir}/usr/share/doc/${pkgname}/chromium_max.md"
+
+    local sizes=(16 24 32 48 64 128 256 512)
+    local variants=(test-alt proto nobak mint ghost)
+
+    for size in "${sizes[@]}"; do
+        install -Dm644 "assets/desktop.icons/${size}x${size}/apps/archon.png" \
+            "${pkgdir}/usr/share/icons/hicolor/${size}x${size}/apps/archon.png"
+    done
+    install -Dm644 "assets/desktop.icons/symbolic/apps/archon-symbolic.svg" \
+        "${pkgdir}/usr/share/icons/hicolor/symbolic/apps/archon-symbolic.svg"
+
+    for variant in "${variants[@]}"; do
+        for size in "${sizes[@]}"; do
+            local source="assets/alt.desktop.icons/${variant}/${size}x${size}/apps/archon.png"
+            if [[ -f "${source}" ]]; then
+                install -Dm644 "${source}" \
+                    "${pkgdir}/usr/share/archon/icons/alt/${variant}/${size}x${size}/apps/archon.png"
+            fi
+        done
+    done
+
+    install -d "${pkgdir}/usr/share/archon/assets"
+    cp -r --no-preserve=ownership "assets/desktop.icons" "${pkgdir}/usr/share/archon/assets/"
+    cp -r --no-preserve=ownership "assets/alt.desktop.icons" "${pkgdir}/usr/share/archon/assets/"
+    install -Dm755 "assets/swap-icon.sh" "${pkgdir}/usr/share/archon/assets/swap-icon.sh"
+
+    install -d "${pkgdir}/usr/share/archon/tools"
+    install -Dm755 "tools/scripts/enable_archon_services.sh" \
+        "${pkgdir}/usr/share/archon/tools/enable_archon_services.sh"
+
+    install -d "${pkgdir}/usr/share/archon/themes"
+    cp -r --no-preserve=ownership "assets/themes"/* "${pkgdir}/usr/share/archon/themes/"
+
+    install -d "${pkgdir}/usr/share/archon/themes/chromium"
+    cp -r --no-preserve=ownership extensions/themes/* "${pkgdir}/usr/share/archon/themes/chromium/"
+    install -Dm644 extensions/themes/README.md "${pkgdir}/usr/share/archon/themes/chromium/README.md"
+
+    install -d "${pkgdir}/usr/share/archon/extensions/archon-sidebar"
+    cp -r --no-preserve=ownership "extensions/archon-sidebar"/* \
+        "${pkgdir}/usr/share/archon/extensions/archon-sidebar/"
+
+    local sidebar_zip="${pkgdir}/usr/share/archon/extensions/archon-sidebar.zip"
+    bsdtar -cf "${sidebar_zip}" --format=zip -C extensions archon-sidebar
+    if [[ -n ${SOURCE_DATE_EPOCH:-} ]]; then
+        touch -d "@${SOURCE_DATE_EPOCH}" "${sidebar_zip}"
+    fi
+
+    local build_dir="chromium/src/out/archon-max"
+    install -d "${pkgdir}/usr/lib/archon/chromium-max"
+    cp -r --no-preserve=ownership "${build_dir}"/* "${pkgdir}/usr/lib/archon/chromium-max/"
+    rm -rf "${pkgdir}/usr/lib/archon/chromium-max/obj" \
+        "${pkgdir}/usr/lib/archon/chromium-max/gen" \
+        "${pkgdir}/usr/lib/archon/chromium-max/.ninja_deps" \
+        "${pkgdir}/usr/lib/archon/chromium-max/.ninja_log"
+
+    if [[ -f "${pkgdir}/usr/lib/archon/chromium-max/chrome_sandbox" ]]; then
+        chmod 4755 "${pkgdir}/usr/lib/archon/chromium-max/chrome_sandbox"
+    fi
+
+    install -Dm644 "${srcdir}/archon.desktop" "${pkgdir}/usr/share/applications/archon.desktop"
+
+    install -Dm644 "assets/native-messaging/archon_host.chromium.json" \
+        "${pkgdir}/etc/chromium/native-messaging-hosts/sh.ghostkellz.archon.host.json"
+    install -Dm644 "assets/native-messaging/archon_host.chrome.json" \
+        "${pkgdir}/etc/opt/chrome/native-messaging-hosts/sh.ghostkellz.archon.host.json"
+
+    install -Dm644 "assets/systemd/user/archon-host.service" \
+        "${pkgdir}/usr/lib/systemd/user/archon-host.service"
+    install -Dm644 "assets/systemd/user/ghostdns.service" \
+        "${pkgdir}/usr/lib/systemd/user/ghostdns.service"
+
+    if [[ -d "chromium/dist" ]]; then
+        install -d "${pkgdir}/usr/share/doc/${pkgname}/build"
+        cp -r --no-preserve=ownership "chromium/dist"/* "${pkgdir}/usr/share/doc/${pkgname}/build/"
+    fi
+
+    if [[ -d "chromium/logs" ]]; then
+        install -d "${pkgdir}/usr/share/doc/${pkgname}/logs"
+        cp -r --no-preserve=ownership "chromium/logs"/* "${pkgdir}/usr/share/doc/${pkgname}/logs/"
+    fi
+
+    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

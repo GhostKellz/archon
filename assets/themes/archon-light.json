@@ -1,0 +1,31 @@
+{
+  "name": "archon-light",
+  "label": "Archon Light",
+  "version": "1.0.0",
+  "author": "Archon Project",
+  "description": "Legacy light theme used prior to the Tokyo Night refresh.",
+  "colors": {
+    "background": {
+      "dim": "#f4f6fb",
+      "surface": "#ffffff",
+      "floating": "#f8fafc"
+    },
+    "foreground": {
+      "primary": "#1f2933",
+      "muted": "#52606d",
+      "subtle": "#7b8794"
+    },
+    "accents": {
+      "primary": "#7f5af0",
+      "secondary": "#5f2eea",
+      "mint": "#4cc9f0",
+      "ghost": "#9fb3c8"
+    },
+    "status": {
+      "info": "#3b82f6",
+      "success": "#22c55e",
+      "warning": "#f59e0b",
+      "danger": "#ef4444"
+    }
+  }
+}

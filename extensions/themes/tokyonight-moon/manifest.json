@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Archon Tokyo Night (Moon)",
+  "version": "1.0.0",
+  "description": "Chromium theme based on tokyonight.nvim's moon variant with softer indigo surfaces and periwinkle accents.",
+  "theme": {
+    "colors": {
+      "frame": [34, 36, 54],
+      "frame_inactive": [30, 32, 48],
+      "frame_incognito": [34, 36, 54],
+      "toolbar": [27, 29, 43],
+      "tab_background_text": [200, 211, 245],
+      "tab_background_incognito": [34, 36, 54],
+      "tab_background_incognito_text": [200, 211, 245],
+      "tab_text": [200, 211, 245],
+      "bookmark_text": [200, 211, 245],
+      "button_background": [130, 170, 255],
+      "ntp_background": [26, 28, 46],
+      "ntp_text": [200, 211, 245],
+      "ntp_link": [101, 188, 255],
+      "ntp_section_text": [200, 211, 245],
+      "ntp_section_link": [101, 188, 255],
+      "control_background": [32, 36, 60]
+    },
+    "properties": {
+      "ntp_logo_alternate": 1
+    }
+  }
+}

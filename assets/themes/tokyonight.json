@@ -1,0 +1,31 @@
+{
+  "name": "tokyonight",
+  "label": "Tokyo Night",
+  "version": "1.0.0",
+  "author": "Archon Project",
+  "description": "Deep navy palette inspired by Tokyonight. Tuned for Wayland-first browsing with vibrant mint and cyan accents.",
+  "colors": {
+    "background": {
+      "dim": "#0f1829",
+      "surface": "#111a2f",
+      "floating": "#161f36"
+    },
+    "foreground": {
+      "primary": "#c0caf5",
+      "muted": "#7aa2f7",
+      "subtle": "#565f89"
+    },
+    "accents": {
+      "primary": "#2dd4bf",
+      "secondary": "#7dcfff",
+      "mint": "#5de4c7",
+      "ghost": "#a9b1d6"
+    },
+    "status": {
+      "info": "#7aa2f7",
+      "success": "#9ece6a",
+      "warning": "#e0af68",
+      "danger": "#f7768e"
+    }
+  }
+}

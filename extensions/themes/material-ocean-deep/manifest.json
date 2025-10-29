@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Archon Material Ocean Deep Blue",
+  "version": "1.0.0",
+  "description": "Material Ocean-inspired deep blue theme with aqua highlights tuned for Chromium Max.",
+  "theme": {
+    "colors": {
+      "frame": [15, 17, 26],
+      "frame_inactive": [22, 24, 36],
+      "frame_incognito": [15, 17, 26],
+      "toolbar": [27, 29, 43],
+      "tab_background_text": [215, 224, 255],
+      "tab_background_incognito": [15, 17, 26],
+      "tab_background_incognito_text": [215, 224, 255],
+      "tab_text": [215, 224, 255],
+      "bookmark_text": [215, 224, 255],
+      "button_background": [33, 199, 168],
+      "ntp_background": [18, 20, 32],
+      "ntp_text": [215, 224, 255],
+      "ntp_link": [130, 170, 255],
+      "ntp_section_text": [215, 224, 255],
+      "ntp_section_link": [130, 170, 255],
+      "control_background": [33, 36, 52]
+    },
+    "properties": {
+      "ntp_logo_alternate": 1
+    }
+  }
+}

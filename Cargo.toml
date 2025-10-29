@@ -2,5 +2,53 @@
 name = "archon"
 version = "0.1.0"
 edition = "2024"
+autobins = false
+
+[workspace]
+members = ["crates/archon-bench"]
+resolver = "2"
 
 [dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.5", features = ["derive"] }
+directories = "5.0"
+rusqlite = { version = "0.31", features = ["bundled", "chrono"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+which = "6.0"
+uuid = { version = "1.10", features = ["v4", "serde"] }
+url = "2.5"
+wayland-client = "0.31"
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "signal", "net", "io-util"] }
+hyper = { version = "1.4", features = ["http1", "http2", "server"] }
+axum = { version = "0.7", features = ["json"] }
+base64 = "0.22"
+hickory-proto = { version = "0.24", features = ["serde"] }
+toml = "0.8"
+tower = "0.4"
+prometheus = "0.13"
+tokio-rustls = "0.24"
+rustls-pemfile = "1.0"
+cid = "0.11"
+hex = "0.4"
+unsigned-varint = "0.7"
+	infer = "0.15"
+
+[dev-dependencies]
+tempfile = "3.12"
+
+[[bin]]
+name = "archon"
+path = "src/bin/archon.rs"
+
+[[bin]]
+name = "ghostdns"
+path = "src/bin/ghostdns.rs"
+
+[[bin]]
+name = "archon-host"
+path = "src/bin/archon_host.rs"

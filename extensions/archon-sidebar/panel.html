@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Archon Sidebar</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Archon AI</h1>
+      <p class="status" id="status">Connecting…</p>
+    </header>
+    <main>
+      <form id="chat-form">
+        <label class="sr-only" for="prompt">Prompt</label>
+        <textarea id="prompt" name="prompt" rows="4" placeholder="Ask Archon anything…" required></textarea>
+        <div class="attachment-control">
+          <label for="attachments">Attach media</label>
+          <input type="file" id="attachments" name="attachments" multiple accept="image/*,audio/*" />
+          <ul id="attachment-list" class="attachment-list" aria-live="polite"></ul>
+        </div>
+        <div class="controls">
+          <select id="provider" name="provider">
+            <option value="">Default provider</option>
+          </select>
+          <button type="submit">Send</button>
+        </div>
+        <div id="provider-capabilities" class="provider-capabilities" aria-live="polite"></div>
+        <div id="conversation-context" class="conversation-context" hidden>
+          <span id="conversation-context-label"></span>
+          <button type="button" id="conversation-reset">Start new thread</button>
+        </div>
+      </form>
+      <section id="log" aria-live="polite"></section>
+      <section id="metrics" class="data-section">
+        <div class="section-header">
+          <h2>Provider metrics</h2>
+          <button type="button" id="refresh-metrics" data-persist="true">Refresh</button>
+        </div>
+        <p class="status" id="metrics-status" data-tone="pending">Loading metrics…</p>
+        <div class="metrics-table-wrapper">
+          <table class="metrics-table" aria-live="polite">
+            <thead>
+              <tr>
+                <th scope="col">Provider</th>
+                <th scope="col">Total</th>
+                <th scope="col">Success</th>
+                <th scope="col">Errors</th>
+                <th scope="col">Avg (ms)</th>
+                <th scope="col">Last (ms)</th>
+                <th scope="col">Updated</th>
+                <th scope="col">Last prompt</th>
+              </tr>
+            </thead>
+            <tbody id="metrics-table-body">
+              <tr>
+                <td colspan="8" class="metrics-empty">No data yet.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+      <section id="transcripts" class="data-section">
+        <div class="section-header">
+          <h2>Transcripts</h2>
+          <button type="button" id="refresh-transcripts" data-persist="true">Refresh</button>
+        </div>
+        <p class="status" id="transcript-status" data-tone="pending">Loading transcripts…</p>
+        <div class="transcript-layout">
+          <ul id="transcript-list" class="transcript-list" aria-label="Transcript history"></ul>
+          <article id="transcript-detail" class="transcript-detail" aria-live="polite"></article>
+        </div>
+      </section>
+      <section id="tools">
+        <h2>Tool-calling</h2>
+        <p class="status" id="tool-status" data-tone="pending">Loading connectors…</p>
+        <form id="tool-form">
+          <div class="controls">
+            <select id="tool-connector" name="connector">
+              <option value="">Loading…</option>
+            </select>
+            <input type="text" id="tool-name" name="tool" placeholder="Tool name" required />
+          </div>
+          <textarea id="tool-arguments" name="arguments" rows="3" placeholder='{"query": "Example"}'></textarea>
+          <div class="controls">
+            <button type="submit">Invoke tool</button>
+            <button type="button" id="refresh-connectors" data-persist="true">Refresh</button>
+          </div>
+        </form>
+        <section id="tool-log" class="tool-log" aria-live="polite"></section>
+      </section>
+    </main>
+    <footer>
+      <small>Requests route through the native <code>archon_host</code> service.</small>
+    </footer>
+    <script type="module" src="panel.js"></script>
+  </body>
+</html>

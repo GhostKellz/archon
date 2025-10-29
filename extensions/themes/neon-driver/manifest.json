@@ -1,0 +1,31 @@
+{
+	"name": "Neon Driver",
+	"version": "1.0",
+	"description": "",
+	"manifest_version": 3,
+	"theme": {
+		"images": {
+			"theme_frame": "images/theme_frame.png",
+			"theme_toolbar": "images/theme_toolbar.jpeg",
+			"theme_tab_background": "images/theme_tab_background.jpeg",
+			"theme_ntp_background": "images/theme_ntp_background.png"
+		},
+		"colors": {
+			"frame": [42, 11, 55],
+			"toolbar": [97, 114, 126],
+			"tab_text": [255, 255, 255],
+			"tab_background_text": [244, 237, 248],
+			"bookmark_text": [42, 11, 55],
+			"ntp_background": [255, 255, 255],
+			"ntp_text": [187, 83, 207],
+			"button_background": [85, 108, 182, 0.9]
+		},
+		"tints": {
+			"buttons": [0.64, 0.94, 0.67]
+		},
+		"properties": {
+			"ntp_background_alignment": "top",
+			"ntp_background_repeat": "no-repeat"
+		}
+	}
+}

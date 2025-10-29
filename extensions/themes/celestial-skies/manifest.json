@@ -1,0 +1,32 @@
+{
+	"name": "Celestial Skies",
+	"version": "1.0",
+	"description": "Hi, thanks for checking out this theme. Please let know what you like by hitting that button ! It's much appreciated. My themes fit 1920 X 1080 resolution.",
+	"manifest_version": 3,
+	"theme": {
+		"images": {
+			"theme_frame": "images/theme_frame.jpeg",
+			"theme_toolbar": "images/theme_toolbar.jpeg",
+			"theme_tab_background": "images/theme_tab_background.png",
+			"theme_ntp_background": "images/theme_ntp_background.jpeg"
+		},
+		"colors": {
+			"frame": [222, 225, 230],
+			"toolbar": [25, 30, 80],
+			"tab_text": [250, 220, 255],
+			"tab_background_text": [253, 213, 218],
+			"bookmark_text": [250, 213, 218],
+			"ntp_background": [33, 44, 105],
+			"ntp_text": [25, 30, 80],
+			"ntp_link": [253, 209, 214],
+			"button_background": [25, 30, 80, 0.9]
+		},
+		"tints": {
+			"buttons": [0.82, 0.75, 0.92]
+		},
+		"properties": {
+			"ntp_background_alignment": "top",
+			"ntp_background_repeat": "no-repeat"
+		}
+	}
+}

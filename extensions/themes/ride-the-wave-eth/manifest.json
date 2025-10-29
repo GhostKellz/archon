@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Archon Ride the Wave (Ethereum)",
+  "version": "1.0.0",
+  "description": "Oceanic gradient theme with Ethereum accents inspired by Chrome's Ride the Wave.",
+  "theme": {
+    "images": {
+      "theme_ntp_background": "images/eth_wave.png"
+    },
+    "colors": {
+      "frame": [16, 34, 66],
+      "frame_inactive": [20, 38, 70],
+      "frame_incognito": [16, 34, 66],
+      "toolbar": [12, 54, 96],
+      "tab_background_text": [224, 242, 255],
+      "tab_background_incognito": [16, 34, 66],
+      "tab_background_incognito_text": [224, 242, 255],
+      "tab_text": [224, 242, 255],
+      "bookmark_text": [206, 231, 255],
+      "button_background": [82, 156, 255],
+      "ntp_background": [10, 26, 52],
+      "ntp_text": [224, 242, 255],
+      "ntp_link": [135, 206, 255],
+      "ntp_section_text": [210, 230, 255],
+      "ntp_section_link": [135, 206, 255],
+      "control_background": [24, 56, 94]
+    },
+    "properties": {
+      "ntp_logo_alternate": 1,
+      "ntp_background_alignment": "bottom",
+      "ntp_background_repeat": "no-repeat"
+    }
+  }
+}

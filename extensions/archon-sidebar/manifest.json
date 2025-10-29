@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Archon Sidebar",
+  "description": "Native Archon AI assistant panel for Chromium Max.",
+  "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAu9VZXoqBYwygJyI072QtdgQXl3k5iADG7n2AFD+a83H8XTur2qxGn8pY/+bexdFv+xo5jBqFaUG2RgxN6E466+vWXTjhBMWrMUR3pvN8MPmMXxMvmP0xSg6u40qCMgfHTCqkfNNpJBWlAbIYW/W2PASi6DPd7OJbRRqtD9h5pz50jdK5Zk90un0nLBKBPXn1HULICwhf66A1VpzwuNFuIBqmoeZaZX6mE6xPD58Ll35H0TADaBrZEcD3xKhsR4HIX66D+QP9enZ5bY3bT5iAG2wE8xmPKzW0fvkYlEYwH14r2raXIiQunlslqY5T2r8j04YfGLwRoTSesFiNUQIDAQAB",
+  "permissions": ["nativeMessaging", "storage", "sidePanel"],
+  "host_permissions": ["http://127.0.0.1:8805/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "action": {
+    "default_title": "Archon Sidebar"
+  }
+}
