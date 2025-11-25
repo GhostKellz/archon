@@ -1,9 +1,17 @@
-use std::{collections::HashMap, env, time::Duration};
+use std::{
+    collections::HashMap,
+    env, fmt, fs,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex},
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Context, Result, bail};
 use cid::Cid;
+use directories::ProjectDirs;
 use reqwest::blocking::Client;
-use serde::Deserialize;
+use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::warn;
 use unsigned_varint::decode as varint_decode;
@@ -30,20 +38,191 @@ enum DecodedContenthash {
     CanonicalWithRaw { canonical: String, raw: String },
 }
 
+const RESOLVER_CACHE_FILENAME: &str = "ens.sqlite";
+const RESOLVER_CACHE_TTL_SECS: u64 = 900;
+
+#[derive(Clone)]
+struct ResolverCache {
+    inner: Arc<ResolverCacheInner>,
+    ttl: Duration,
+    path: PathBuf,
+}
+
+struct ResolverCacheInner {
+    conn: Mutex<Connection>,
+}
+
+impl ResolverCache {
+    fn open() -> Result<Self> {
+        let dirs = ProjectDirs::from("sh", "ghostkellz", "Archon")
+            .context("Unable to resolve platform cache directory for resolver cache")?;
+        let path = dirs.cache_dir().join(RESOLVER_CACHE_FILENAME);
+        Self::open_at(path)
+    }
+
+    fn open_at<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "Failed to create resolver cache directory at {}",
+                    parent.display()
+                )
+            })?;
+        }
+
+        let conn = Connection::open(&path)
+            .with_context(|| format!("Failed to open resolver cache at {}", path.display()))?;
+        conn.pragma_update(None, "journal_mode", "WAL")
+            .context("Failed to enable WAL mode for resolver cache")?;
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS resolutions (
+                name TEXT NOT NULL,
+                service TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (name, service)
+            )",
+            [],
+        )
+        .context("Failed to create resolver cache table")?;
+
+        Ok(Self {
+            inner: Arc::new(ResolverCacheInner {
+                conn: Mutex::new(conn),
+            }),
+            ttl: Duration::from_secs(RESOLVER_CACHE_TTL_SECS),
+            path,
+        })
+    }
+
+    fn lookup(&self, name: &str, service: DomainService) -> Result<Option<DomainResolution>> {
+        let key = name.to_ascii_lowercase();
+        let service_id = service.as_str();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let guard = self
+            .inner
+            .conn
+            .lock()
+            .expect("resolver cache mutex poisoned");
+
+        let mut stmt = guard
+            .prepare("SELECT payload, updated_at FROM resolutions WHERE name = ?1 AND service = ?2")
+            .context("Failed to prepare resolver cache lookup statement")?;
+        let row: Option<(String, i64)> = stmt
+            .query_row(params![key, service_id], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .optional()
+            .context("Resolver cache lookup failed")?;
+        drop(stmt);
+
+        match row {
+            Some((payload, updated_at)) => {
+                if now.saturating_sub(updated_at) > self.ttl.as_secs() as i64 {
+                    guard
+                        .execute(
+                            "DELETE FROM resolutions WHERE name = ?1 AND service = ?2",
+                            params![key, service_id],
+                        )
+                        .context("Failed to purge expired resolver cache entry")?;
+                    Ok(None)
+                } else {
+                    let resolution: DomainResolution = serde_json::from_str(&payload)
+                        .context("Failed to deserialize resolver cache payload")?;
+                    Ok(Some(resolution))
+                }
+            }
+            None => Ok(None),
+        }
+    }
+
+    fn store(
+        &self,
+        name: &str,
+        service: DomainService,
+        resolution: &DomainResolution,
+    ) -> Result<()> {
+        let key = name.to_ascii_lowercase();
+        let service_id = service.as_str();
+        let payload = serde_json::to_string(resolution)
+            .context("Failed to serialise resolver cache payload")?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let guard = self
+            .inner
+            .conn
+            .lock()
+            .expect("resolver cache mutex poisoned");
+        guard
+            .execute(
+                "INSERT INTO resolutions (name, service, payload, updated_at)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(name, service) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at",
+                params![key, service_id, payload, now],
+            )
+            .context("Failed to upsert resolver cache entry")?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn force_age_entry(&self, name: &str, service: DomainService, seconds: i64) -> Result<()> {
+        let key = name.to_ascii_lowercase();
+        let service_id = service.as_str();
+        let guard = self
+            .inner
+            .conn
+            .lock()
+            .expect("resolver cache mutex poisoned");
+        guard
+            .execute(
+                "UPDATE resolutions SET updated_at = updated_at - ?1 WHERE name = ?2 AND service = ?3",
+                params![seconds, key, service_id],
+            )
+            .context("Failed to age resolver cache entry")?;
+        Ok(())
+    }
+}
+
+impl fmt::Debug for ResolverCache {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResolverCache")
+            .field("path", &self.path)
+            .field("ttl_secs", &self.ttl.as_secs())
+            .finish()
+    }
+}
+
 /// Handles crypto network metadata and endpoint validation.
 #[derive(Debug, Clone)]
 pub struct CryptoStack {
     networks: Vec<CryptoNetworkConfig>,
     default_network: Option<String>,
     resolvers: CryptoResolverSettings,
+    cache: Option<ResolverCache>,
 }
 
 impl CryptoStack {
     pub fn from_settings(settings: &CryptoSettings) -> Self {
+        let cache = match ResolverCache::open() {
+            Ok(cache) => Some(cache),
+            Err(err) => {
+                warn!(error = %err, "Failed to initialise resolver cache; continuing without caching");
+                None
+            }
+        };
         Self {
             networks: settings.networks.clone(),
             default_network: settings.default_network.clone(),
             resolvers: settings.resolvers.clone(),
+            cache,
         }
     }
 
@@ -83,15 +262,63 @@ impl CryptoStack {
         name: &str,
         http: &T,
     ) -> Result<DomainResolution> {
-        if name.ends_with(".eth") {
-            self.resolve_ens(name, http)
+        let service = Self::detect_service(name);
+        let lookup_key = name.to_ascii_lowercase();
+
+        if let Some(cache) = self.cache.as_ref() {
+            match cache.lookup(&lookup_key, service) {
+                Ok(Some(resolution)) => return Ok(resolution),
+                Ok(None) => {}
+                Err(err) => warn!(
+                    error = %err,
+                    domain = name,
+                    service = service.as_str(),
+                    "Resolver cache lookup failed; falling back to upstream",
+                ),
+            }
+        }
+
+        let resolution = match service {
+            DomainService::Ens => self.resolve_ens(name, http)?,
+            DomainService::Unstoppable => self.resolve_unstoppable(name, http)?,
+            DomainService::Hedera => self.resolve_hedera(name, http)?,
+            DomainService::Xrpl => self.resolve_xrpl(name, http)?,
+        };
+
+        if let Some(cache) = self.cache.as_ref() {
+            if let Err(err) = cache.store(&lookup_key, service, &resolution) {
+                warn!(
+                    error = %err,
+                    domain = name,
+                    service = service.as_str(),
+                    "Failed to persist resolver cache entry",
+                );
+            }
+        }
+
+        Ok(resolution)
+    }
+
+    fn detect_service(name: &str) -> DomainService {
+        let lower = name.to_ascii_lowercase();
+        if lower.ends_with(".eth") {
+            DomainService::Ens
+        } else if lower.ends_with(".hbar") || lower.ends_with(".boo") {
+            DomainService::Hedera
+        } else if lower.ends_with(".xrp") {
+            DomainService::Xrpl
         } else {
-            self.resolve_unstoppable(name, http)
+            // Default to Unstoppable for .crypto, .nft, .wallet, .x, .zil, etc.
+            DomainService::Unstoppable
         }
     }
 
     pub fn resolver_settings(&self) -> &CryptoResolverSettings {
         &self.resolvers
+    }
+
+    pub fn resolver_settings_mut(&mut self) -> &mut CryptoResolverSettings {
+        &mut self.resolvers
     }
 
     fn enrich_contenthash(
@@ -294,6 +521,96 @@ impl CryptoStack {
         })
     }
 
+    fn resolve_hedera<T: DomainResolverHttp>(
+        &self,
+        name: &str,
+        http: &T,
+    ) -> Result<DomainResolution> {
+        let base = self.resolvers.hedera_endpoint.trim_end_matches('/');
+
+        // Hedera Name Service uses the format: resolve by domain name
+        // For now we use a placeholder API - in production this would be hashgraph.name or similar
+        let url = format!("{base}/resolve/{name}");
+
+        let headers = if let Some(api_key_env) = self.resolvers.hedera_api_key_env.as_ref() {
+            if let Ok(api_key) = env::var(api_key_env) {
+                vec![("Authorization", format!("Bearer {api_key}"))]
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
+        let payload = http.get_json(&url, &headers)?;
+        let response: HederaResponse = serde_json::from_value(payload)
+            .with_context(|| "Failed to parse Hedera Name Service response".to_string())?;
+
+        let mut records = HashMap::new();
+        let primary_address = response.account_id.clone();
+
+        if let Some(account_id) = &response.account_id {
+            records.insert("hedera.account".into(), account_id.clone());
+        }
+
+        if let Some(memo) = response.memo {
+            records.insert("hedera.memo".into(), memo);
+        }
+
+        if let Some(public_key) = response.public_key {
+            records.insert("hedera.pubkey".into(), public_key);
+        }
+
+        Ok(DomainResolution {
+            name: name.to_string(),
+            primary_address,
+            records,
+            service: DomainService::Hedera,
+        })
+    }
+
+    fn resolve_xrpl<T: DomainResolverHttp>(
+        &self,
+        name: &str,
+        http: &T,
+    ) -> Result<DomainResolution> {
+        let base = self.resolvers.xrpl_endpoint.trim_end_matches('/');
+        let url = format!("{base}/{name}");
+
+        let headers = if let Some(api_key_env) = self.resolvers.xrpl_api_key_env.as_ref() {
+            if let Ok(api_key) = env::var(api_key_env) {
+                vec![("Authorization", format!("Bearer {api_key}"))]
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
+        let payload = http.get_json(&url, &headers)?;
+        let response: XrplResponse = serde_json::from_value(payload)
+            .with_context(|| "Failed to parse XRPL Name Service response".to_string())?;
+
+        let mut records = response.records.unwrap_or_default();
+        let mut primary_address = response.xrp_address.clone();
+
+        if let Some(addresses) = response.addresses {
+            for (symbol, address) in addresses {
+                if primary_address.is_none() && symbol.to_uppercase() == "XRP" {
+                    primary_address = Some(address.clone());
+                }
+                records.insert(format!("address.{symbol}"), address);
+            }
+        }
+
+        Ok(DomainResolution {
+            name: response.domain.unwrap_or_else(|| name.to_string()),
+            primary_address,
+            records,
+            service: DomainService::Xrpl,
+        })
+    }
+
     fn maybe_pin_contenthash(&self, info: &ContenthashInfo) -> Result<()> {
         let api = match self.resolvers.ipfs_api.as_ref() {
             Some(api) => api,
@@ -336,7 +653,7 @@ impl CryptoStack {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainResolution {
     pub name: String,
     pub primary_address: Option<String>,
@@ -344,10 +661,24 @@ pub struct DomainResolution {
     pub service: DomainService,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum DomainService {
     Ens,
     Unstoppable,
+    Hedera,
+    Xrpl,
+}
+
+impl DomainService {
+    fn as_str(&self) -> &'static str {
+        match self {
+            DomainService::Ens => "ens",
+            DomainService::Unstoppable => "unstoppable",
+            DomainService::Hedera => "hedera",
+            DomainService::Xrpl => "xrpl",
+        }
+    }
 }
 
 pub trait DomainResolverHttp {
@@ -411,6 +742,28 @@ struct UdResponse {
 #[derive(Debug, Deserialize)]
 struct UdMeta {
     name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct HederaResponse {
+    #[serde(default)]
+    account_id: Option<String>,
+    #[serde(default)]
+    memo: Option<String>,
+    #[serde(default)]
+    public_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct XrplResponse {
+    #[serde(default)]
+    domain: Option<String>,
+    #[serde(default)]
+    xrp_address: Option<String>,
+    #[serde(default)]
+    addresses: Option<HashMap<String, String>>,
+    #[serde(default)]
+    records: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -484,6 +837,7 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::sync::{Mutex, OnceLock};
+    use tempfile::tempdir;
     use unsigned_varint::encode as varint_encode;
 
     const SAMPLE_CID: &str = "bafybeigdyrzt3nz6mx6mxwe3ieucs5cjoxgr7d5p3qsyt4nkuppk3f2nke";
@@ -530,6 +884,63 @@ mod tests {
     fn env_guard() -> &'static Mutex<()> {
         static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
         ENV_MUTEX.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn resolver_cache_roundtrip() {
+        let dir = tempdir().expect("temp dir");
+        let cache_path = dir.path().join("ens.sqlite");
+        let cache = ResolverCache::open_at(&cache_path).expect("cache open");
+
+        let mut records = HashMap::new();
+        records.insert("contenthash".into(), "ipfs://bafy-test".into());
+
+        let resolution = DomainResolution {
+            name: "archon.eth".into(),
+            primary_address: Some("0xdeadbeef".into()),
+            records,
+            service: DomainService::Ens,
+        };
+
+        cache
+            .store("archon.eth", DomainService::Ens, &resolution)
+            .expect("store in cache");
+        let cached = cache
+            .lookup("archon.eth", DomainService::Ens)
+            .expect("cache lookup")
+            .expect("entry present");
+
+        assert_eq!(cached, resolution);
+    }
+
+    #[test]
+    fn resolver_cache_expires_entries() {
+        let dir = tempdir().expect("temp dir");
+        let cache = ResolverCache::open_at(dir.path().join("ens.sqlite")).expect("cache open");
+
+        let resolution = DomainResolution {
+            name: "archon.eth".into(),
+            primary_address: None,
+            records: HashMap::new(),
+            service: DomainService::Ens,
+        };
+
+        cache
+            .store("archon.eth", DomainService::Ens, &resolution)
+            .expect("store in cache");
+        cache
+            .force_age_entry(
+                "archon.eth",
+                DomainService::Ens,
+                (RESOLVER_CACHE_TTL_SECS as i64) + 1,
+            )
+            .expect("age entry");
+
+        let cached = cache
+            .lookup("archon.eth", DomainService::Ens)
+            .expect("cache lookup");
+
+        assert!(cached.is_none());
     }
 
     #[test]

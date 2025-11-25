@@ -215,8 +215,15 @@ impl GhostDns {
         if self.settings.enabled {
             Self::check_socket(&self.settings.doh_listen, "DoH listener", &mut issues);
             Self::check_socket(&self.settings.dot_listen, "DoT listener", &mut issues);
+            let doq_trimmed = self.settings.doq_listen.trim();
+            if !doq_trimmed.is_empty() && !doq_trimmed.eq_ignore_ascii_case("auto") {
+                Self::check_socket(&self.settings.doq_listen, "DoQ listener", &mut issues);
+            }
             if let Some(metrics) = &self.settings.metrics_listen {
                 Self::check_socket(metrics, "Metrics listener", &mut issues);
+            }
+            if let Some(ipfs) = &self.settings.ipfs_gateway_listen {
+                Self::check_socket(ipfs, "IPFS gateway listener", &mut issues);
             }
         }
 
@@ -257,11 +264,19 @@ impl GhostDns {
             dot_listen: self.settings.dot_listen.clone(),
             dot_cert_path: self.settings.dot_cert_path.clone(),
             dot_key_path: self.settings.dot_key_path.clone(),
+            doq_enabled: {
+                let trimmed = self.settings.doq_listen.trim();
+                !trimmed.is_empty()
+            },
+            doq_listen: self.settings.doq_listen.clone(),
+            doq_cert_path: self.settings.doq_cert_path.clone(),
+            doq_key_path: self.settings.doq_key_path.clone(),
             cache_path,
             cache_ready,
             cache_ttl_seconds: DEFAULT_CACHE_TTL,
             cache_negative_ttl_seconds: DEFAULT_NEGATIVE_CACHE_TTL,
             metrics_listen: self.settings.metrics_listen.clone(),
+            ipfs_gateway_listen: self.settings.ipfs_gateway_listen.clone(),
             dnssec_enforce: self.settings.dnssec_enforce,
             dnssec_fail_open: self.settings.dnssec_fail_open,
             ecs_passthrough: self.settings.ecs_passthrough,
@@ -294,8 +309,29 @@ impl GhostDns {
         } else {
             output.push_str("# dot_key_path = \"/etc/archon/ghostdns/privkey.pem\"\n");
         }
+        let doq_listen = self.settings.doq_listen.trim();
+        if doq_listen.is_empty() || doq_listen.eq_ignore_ascii_case("auto") {
+            output.push_str("doq_listen = \"auto\"\n");
+        } else {
+            output.push_str(&format!("doq_listen = \"{}\"\n", doq_listen));
+        }
+        if let Some(cert) = &self.settings.doq_cert_path {
+            output.push_str(&format!("doq_cert_path = \"{}\"\n", cert.display()));
+        } else {
+            output.push_str("# doq_cert_path = \"/etc/archon/ghostdns/fullchain.pem\"\n");
+        }
+        if let Some(key) = &self.settings.doq_key_path {
+            output.push_str(&format!("doq_key_path = \"{}\"\n", key.display()));
+        } else {
+            output.push_str("# doq_key_path = \"/etc/archon/ghostdns/privkey.pem\"\n");
+        }
         if let Some(metrics) = &self.settings.metrics_listen {
             output.push_str(&format!("metrics_listen = \"{}\"\n", metrics));
+        }
+        if let Some(ipfs) = &self.settings.ipfs_gateway_listen {
+            output.push_str(&format!("ipfs_gateway_listen = \"{}\"\n", ipfs));
+        } else {
+            output.push_str("# ipfs_gateway_listen = \"127.0.0.1:8080\"\n");
         }
         output.push('\n');
 
@@ -379,11 +415,16 @@ pub struct GhostDnsHealthReport {
     pub dot_listen: String,
     pub dot_cert_path: Option<PathBuf>,
     pub dot_key_path: Option<PathBuf>,
+    pub doq_enabled: bool,
+    pub doq_listen: String,
+    pub doq_cert_path: Option<PathBuf>,
+    pub doq_key_path: Option<PathBuf>,
     pub cache_path: PathBuf,
     pub cache_ready: bool,
     pub cache_ttl_seconds: u64,
     pub cache_negative_ttl_seconds: u64,
     pub metrics_listen: Option<String>,
+    pub ipfs_gateway_listen: Option<String>,
     pub dnssec_enforce: bool,
     pub dnssec_fail_open: bool,
     pub ecs_passthrough: bool,
@@ -419,7 +460,11 @@ mod tests {
             dot_listen: "127.0.0.1:853".into(),
             dot_cert_path: None,
             dot_key_path: None,
+            doq_listen: "127.0.0.1:784".into(),
+            doq_cert_path: None,
+            doq_key_path: None,
             metrics_listen: Some("127.0.0.1:9095".into()),
+            ipfs_gateway_listen: Some("127.0.0.1:8080".into()),
             dnssec_enforce: false,
             dnssec_fail_open: false,
             ecs_passthrough: false,
@@ -441,7 +486,11 @@ mod tests {
             dot_listen: "127.0.0.1:853".into(),
             dot_cert_path: None,
             dot_key_path: None,
+            doq_listen: "127.0.0.1:784".into(),
+            doq_cert_path: None,
+            doq_key_path: None,
             metrics_listen: Some("127.0.0.1:9095".into()),
+            ipfs_gateway_listen: Some("127.0.0.1:8080".into()),
             dnssec_enforce: false,
             dnssec_fail_open: false,
             ecs_passthrough: false,

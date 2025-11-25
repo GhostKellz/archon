@@ -37,6 +37,7 @@
 ### 3. GhostDNS (DoT/DoH + ENS/UD Resolver)
 
 * Unified resolver with full **DoT (853)** and **DoH (443)** support.
+* Optional **DoQ (784)** listener for DNS-over-QUIC clients.
 * Optional Do53 (LAN/local testing only).
 * ENS + Unstoppable Domains resolver (TLDs: `.eth`, `.crypto`, `.x`, `.nft`, `.zil`, `.wallet`).
 * SQLite cache with TTL, LRU eviction, negative caching.
@@ -133,12 +134,12 @@
 
 * [x] Package `chromium-max` (source build with ThinLTO/PGO).
 * [x] Add SBOM + signing automation.
-* [ ] Integrate telemetry and crash handling for Rust daemons.
+* [x] Integrate telemetry and crash handling for Rust daemons.
 
 ### Phase 3 – Extended Features
 
 * [x] Implement omnibox `ens:` keyword resolver.
-* [ ] Native IPFS gateway integration (for ENS contenthash).
+* [x] Native IPFS gateway integration (for ENS contenthash).
 * [ ] WebGPU stability tester.
 * [ ] Archon settings UI (extension or Rust GTK frontend).
 
@@ -147,7 +148,7 @@
 ## MVP Definition of Done
 
 * `archon` launches Chromium with full flag set and policies.
-* GhostDNS serves DoH/DoT + resolves `.eth`/`.crypto` locally.
+* GhostDNS serves DoH/DoT + resolves `.eth`/`.x` / `.crypto` and others  locally.
 * AI Sidebar connects to local host and functions offline.
 * `archon-bench` produces KPI metrics in CI.
 * All sidecars (GhostDNS, Archon Host) run sandboxed via systemd.

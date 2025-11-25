@@ -26,6 +26,17 @@ Packaged builds copy these folders into `/usr/share/archon/themes/chromium/` so 
 | `sunset-by-mikael-gustafsson/` | Sunset by Mikael Gustafsson | Imported from ThemeBeta. |
 | `themebeta-custom/` | ThemeBeta.com | Generic ThemeBeta export retained for reference. |
 
+## Screenshot guidelines
+
+Reliable previews make it easier to spot regressions between releases. When refreshing theme visuals, try the following recipe:
+
+- Launch Chromium with a clean profile so previous experiments do not leak into the shot. `chromium --user-data-dir=/tmp/archon-theme-shot` works well for quick sessions.
+- Set the browser window to **1440×900** (or another agreed baseline) before capturing. This keeps the toolbar proportions comparable in docs and release notes.
+- Visit `chrome://settings/appearance` and temporarily disable custom toolbars or extensions that could overlap with the theme frame.
+- Toggle the Archon launcher’s dark/light accent switch if the palette supports both, and capture each variant once.
+- Use the built-in screenshot shortcut (`Ctrl` + `Shift` + `P` → “screenshot”) so Chromium trims the window chrome automatically; avoid external tools that might add shadows or transparency artifacts.
+- Store the final PNG under `extensions/themes/screenshots/<theme-name>.png` and reference it from release announcements or the packaging README.
+
 ## Usage
 
 1. Visit `chrome://extensions` (or `brave://extensions`, `edge://extensions`, etc.).

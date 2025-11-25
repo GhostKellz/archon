@@ -1,0 +1,61 @@
+name: Run Archon Bench (Load)
+
+on:
+  workflow_call:
+    inputs:
+      scenario:
+        description: Load scenario to execute (defaults to top-sites)
+        required: false
+        type: string
+        default: top-sites
+      binary_path:
+        description: Absolute path to Chromium/Chrome binary on the runner
+        required: false
+        type: string
+      output_dir:
+        description: Optional output directory override for report artifacts
+        required: false
+        type: string
+    secrets:
+      github-token:
+        required: false
+
+jobs:
+  load-benchmark:
+    runs-on:
+      - self-hosted
+      - nv-palladium
+    env:
+      RUST_LOG: archon_bench=info
+      ARCHON_BENCH_SCENARIO: "${{ inputs.scenario }}"
+      ARCHON_BENCH_BINARY: "${{ inputs.binary_path }}"
+      ARCHON_BENCH_OUTPUT: "${{ inputs.output_dir }}"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Ensure script is executable
+        run: chmod +x tools/build/scripts/run_archon_bench.sh
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run load benchmark
+        run: tools/build/scripts/run_archon_bench.sh load
+
+      - name: Upload benchmark report (default directory)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: archon-bench-load-${{ inputs.scenario }}
+          path: |
+            ~/Archon/benchmarks/load/${{ inputs.scenario }}/*.json
+          if-no-files-found: warn
+
+      - name: Upload benchmark report (custom directory)
+        if: ${{ always() && inputs.output_dir != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: archon-bench-load-${{ inputs.scenario }}-custom
+          path: ${{ inputs.output_dir }}/load/${{ inputs.scenario }}/*.json
+          if-no-files-found: warn

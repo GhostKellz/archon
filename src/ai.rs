@@ -4,6 +4,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime};
 
+use crate::telemetry::ServiceTelemetry;
 use anyhow::{Context, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::blocking::{Client, RequestBuilder};
@@ -29,15 +30,25 @@ pub struct AiBridge {
     default_provider: String,
     transcripts: Arc<TranscriptStore>,
     metrics: Arc<AiProviderMetrics>,
+    telemetry: Option<ServiceTelemetry>,
 }
 
 impl AiBridge {
     pub fn from_settings(settings: &AiSettings, transcripts: Arc<TranscriptStore>) -> Self {
+        Self::from_settings_with_telemetry(settings, transcripts, None)
+    }
+
+    pub fn from_settings_with_telemetry(
+        settings: &AiSettings,
+        transcripts: Arc<TranscriptStore>,
+        telemetry: Option<ServiceTelemetry>,
+    ) -> Self {
         Self {
             providers: settings.providers.clone(),
             default_provider: settings.default_provider.clone(),
             transcripts,
             metrics: Arc::new(AiProviderMetrics::default()),
+            telemetry,
         }
     }
 
@@ -151,12 +162,14 @@ impl AiBridge {
             Ok(value) => value,
             Err(err) => {
                 self.metrics.record_error(&config.name, &err);
+                self.record_telemetry_error(&config.name, &prompt, &err);
                 return Err(err);
             }
         };
 
         self.metrics
             .record_success(&config.name, &prompt, response.latency_ms);
+        self.record_telemetry_success(&config.name, &prompt, response.latency_ms);
 
         let attachment_inputs = prompt
             .attachments
@@ -632,6 +645,44 @@ impl AiBridge {
 
         Ok(())
     }
+
+    fn record_telemetry_success(&self, provider: &str, prompt: &AiChatPrompt, latency_ms: u64) {
+        let Some(telemetry) = &self.telemetry else {
+            return;
+        };
+
+        let (image_attachments, audio_attachments) = attachment_counts(prompt);
+        let details = json!({
+            "provider": provider,
+            "result": "success",
+            "latency_ms": latency_ms,
+            "prompt_preview": prompt_preview(prompt),
+            "conversation_id": prompt.conversation_id.map(|id| id.to_string()),
+            "history_messages": prompt.history.len(),
+            "image_attachments": image_attachments,
+            "audio_attachments": audio_attachments,
+        });
+        telemetry.record_metric("ai_provider_success", details);
+    }
+
+    fn record_telemetry_error(&self, provider: &str, prompt: &AiChatPrompt, error: &anyhow::Error) {
+        let Some(telemetry) = &self.telemetry else {
+            return;
+        };
+
+        let (image_attachments, audio_attachments) = attachment_counts(prompt);
+        let details = json!({
+            "provider": provider,
+            "result": "error",
+            "error": error.to_string(),
+            "prompt_preview": prompt_preview(prompt),
+            "conversation_id": prompt.conversation_id.map(|id| id.to_string()),
+            "history_messages": prompt.history.len(),
+            "image_attachments": image_attachments,
+            "audio_attachments": audio_attachments,
+        });
+        telemetry.record_metric("ai_provider_error", details);
+    }
 }
 
 #[derive(Debug, Default)]
@@ -740,6 +791,18 @@ fn prompt_preview(prompt: &AiChatPrompt) -> Option<String> {
         preview.push('…');
     }
     Some(preview)
+}
+
+fn attachment_counts(prompt: &AiChatPrompt) -> (usize, usize) {
+    let mut image = 0usize;
+    let mut audio = 0usize;
+    for attachment in &prompt.attachments {
+        match attachment.kind {
+            AiAttachmentKind::Image => image += 1,
+            AiAttachmentKind::Audio => audio += 1,
+        }
+    }
+    (image, audio)
 }
 
 fn join_endpoint(base: &str, path: &str) -> String {
@@ -1143,9 +1206,13 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::collections::HashMap;
+    use std::fs;
     use std::sync::Arc;
 
+    use crate::config::TelemetrySettings;
+    use crate::telemetry::ServiceTelemetry;
     use crate::transcript::TranscriptStore;
+    use tempfile::tempdir;
     use uuid::Uuid;
 
     #[derive(Debug, Clone)]
@@ -1365,5 +1432,109 @@ mod tests {
         assert!(result.is_err());
         let error = result.unwrap_err().to_string();
         assert!(error.contains("does not support audio"));
+    }
+
+    #[test]
+    fn telemetry_records_successful_provider_call() {
+        let transcripts_dir = tempdir().expect("transcripts dir");
+        let telemetry_dir = tempdir().expect("telemetry dir");
+
+        let settings = AiSettings::default();
+        let default = settings.default_provider.clone();
+        let provider = settings
+            .providers
+            .iter()
+            .find(|p| p.name == default)
+            .expect("default provider");
+        let telemetry_settings = TelemetrySettings {
+            enabled: true,
+            collector_url: None,
+            api_key_env: None,
+            buffer_dir: Some(telemetry_dir.path().to_path_buf()),
+            max_buffer_bytes: Some(4096),
+        };
+        let telemetry = ServiceTelemetry::new("archon-host", &telemetry_settings);
+
+        let bridge = AiBridge::from_settings_with_telemetry(
+            &settings,
+            Arc::new(TranscriptStore::new(transcripts_dir.path().to_path_buf()).expect("store")),
+            Some(telemetry.clone()),
+        );
+
+        let base = provider.endpoint.trim_end_matches('/');
+        let version = join_endpoint(base, "api/version");
+        let chat = join_endpoint(base, "api/chat");
+        let stub = StubAiHttp::new(vec![
+            (version.clone(), json!({"version": "0.1"})),
+            (
+                chat.clone(),
+                json!({
+                    "model": provider.default_model.clone().unwrap(),
+                    "message": {"role": "assistant", "content": "pong"}
+                }),
+            ),
+        ]);
+
+        let response = bridge
+            .chat(Some(&default), "hello", &stub)
+            .expect("chat success");
+        assert_eq!(response.reply, "pong");
+
+        let path = telemetry_dir.path().join("archon-host.jsonl");
+        let contents = fs::read_to_string(&path).expect("telemetry file");
+        let event: Value =
+            serde_json::from_str(contents.lines().last().expect("line")).expect("event json");
+        assert_eq!(event["message"], "ai_provider_success");
+        assert_eq!(event["details"]["provider"], default);
+        assert_eq!(event["details"]["result"], "success");
+    }
+
+    #[test]
+    fn telemetry_records_failed_provider_call() {
+        let transcripts_dir = tempdir().expect("transcripts dir");
+        let telemetry_dir = tempdir().expect("telemetry dir");
+
+        let settings = AiSettings::default();
+        let default = settings.default_provider.clone();
+        let provider = settings
+            .providers
+            .iter()
+            .find(|p| p.name == default)
+            .expect("default provider");
+        let telemetry_settings = TelemetrySettings {
+            enabled: true,
+            collector_url: None,
+            api_key_env: None,
+            buffer_dir: Some(telemetry_dir.path().to_path_buf()),
+            max_buffer_bytes: Some(4096),
+        };
+        let telemetry = ServiceTelemetry::new("archon-host", &telemetry_settings);
+
+        let bridge = AiBridge::from_settings_with_telemetry(
+            &settings,
+            Arc::new(TranscriptStore::new(transcripts_dir.path().to_path_buf()).expect("store")),
+            Some(telemetry.clone()),
+        );
+
+        let base = provider.endpoint.trim_end_matches('/');
+        let version = join_endpoint(base, "api/version");
+        let stub = StubAiHttp::new(vec![(version.clone(), json!({"version": "0.1"}))]);
+
+        let result = bridge.chat(Some(&default), "hello", &stub);
+        assert!(result.is_err());
+
+        let path = telemetry_dir.path().join("archon-host.jsonl");
+        let contents = fs::read_to_string(&path).expect("telemetry file");
+        let event: Value =
+            serde_json::from_str(contents.lines().last().expect("line")).expect("event json");
+        assert_eq!(event["message"], "ai_provider_error");
+        assert_eq!(event["details"]["provider"], default);
+        assert_eq!(event["details"]["result"], "error");
+        assert!(
+            event["details"]["error"]
+                .as_str()
+                .unwrap()
+                .contains("no stub")
+        );
     }
 }

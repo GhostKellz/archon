@@ -5,9 +5,9 @@ use archon::config::{LaunchSettings, default_config_path};
 use archon::crypto::CryptoStack;
 use archon::ghostdns::GhostDns;
 use archon::ghostdns::daemon::GhostDnsDaemon;
+use archon::telemetry::ServiceTelemetry;
 use clap::{ArgAction, Parser};
 use tracing::{info, warn};
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(name = "ghostdns", author = "GhostKellz", version, about = "Archon GhostDNS daemon", long_about = None)]
@@ -25,47 +25,65 @@ struct Args {
     verbose: bool,
 }
 
-fn init_tracing(verbose: bool) {
-    let default_level = if verbose {
-        "archon=debug"
-    } else {
-        "archon=info"
-    };
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .try_init();
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    init_tracing(args.verbose);
-
     let launcher_config = resolve_launcher_config(args.config.as_ref())?;
     let mut settings = LaunchSettings::load_or_default(&launcher_config)?;
+
+    if let Err(err) = archon::telemetry::init_tracing("ghostdns", args.verbose, &settings.telemetry)
+    {
+        eprintln!("warning: failed to initialise ghostdns tracing: {err}");
+    }
+
+    let telemetry = ServiceTelemetry::new("ghostdns", &settings.telemetry);
+    telemetry.record_startup();
 
     if let Some(path) = &args.ghostdns_config {
         settings.ghostdns.config_path = Some(path.clone());
     }
 
-    let ghostdns = GhostDns::from_settings(&settings.ghostdns)?;
+    let ghostdns = match GhostDns::from_settings(&settings.ghostdns) {
+        Ok(instance) => instance,
+        Err(err) => {
+            telemetry.record_error(&err);
+            return Err(err);
+        }
+    };
     let crypto = CryptoStack::from_settings(&settings.crypto);
     let resolvers = settings.crypto.resolvers.clone();
 
-    ensure_default_config(&ghostdns, &resolvers)?;
+    if let Err(err) = ensure_default_config(&ghostdns, &resolvers) {
+        telemetry.record_error(&err);
+        return Err(err);
+    }
     let config_path = args
         .ghostdns_config
         .as_ref()
         .cloned()
         .unwrap_or_else(|| ghostdns.config_path().clone());
-    let runtime = GhostDnsDaemon::load_config_file(&config_path)?;
+    let runtime = match GhostDnsDaemon::load_config_file(&config_path) {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            telemetry.record_error(&err);
+            return Err(err);
+        }
+    };
 
-    let daemon = GhostDnsDaemon::new(runtime, crypto)?;
+    let daemon = match GhostDnsDaemon::new(runtime, crypto) {
+        Ok(daemon) => daemon,
+        Err(err) => {
+            telemetry.record_error(&err);
+            return Err(err);
+        }
+    };
     info!(config = %config_path.display(), "Starting GhostDNS daemon");
-    daemon.run().await
+    let result = daemon.run().await;
+    match &result {
+        Ok(_) => telemetry.record_shutdown(),
+        Err(err) => telemetry.record_error(err),
+    }
+    result
 }
 
 fn resolve_launcher_config(override_path: Option<&PathBuf>) -> Result<PathBuf> {

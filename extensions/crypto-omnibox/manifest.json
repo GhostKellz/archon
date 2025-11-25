@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "Archon Crypto Resolver",
+  "description": "Omnibox integration for resolving .eth, .hbar, .boo, .xrp, and Unstoppable Domains",
+  "version": "0.1.0",
+  "permissions": ["tabs", "storage"],
+  "host_permissions": [
+    "http://127.0.0.1:8805/*",
+    "https://api.ensideas.com/*",
+    "https://resolve.unstoppabledomains.com/*",
+    "https://mainnet-public.mirrornode.hedera.com/*",
+    "https://xrplns.io/*"
+  ],
+  "omnibox": {
+    "keyword": "crypto"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}

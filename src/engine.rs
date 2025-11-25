@@ -9,7 +9,7 @@ use anyhow::{Result, bail};
 
 use crate::config::{EngineKind, EngineSpecificConfig, LaunchMode, LaunchRequest, LaunchSettings};
 use crate::profile::ProfileRecord;
-use crate::ui::{GpuVendor, UiHealthReport};
+use crate::ui::{GpuVendor, NvidiaDriverKind, UiHealthReport};
 
 /// Materialised command specification ready to be spawned or logged.
 #[derive(Debug, Clone)]
@@ -223,13 +223,15 @@ impl BrowserEngine for ChromiumEngine {
             false
         };
 
-        let compositor = ui
-            .compositor
-            .as_deref()
-            .map(|value| value.to_ascii_lowercase())
-            .unwrap_or_default();
-        if matches!(ui.gpu_vendor, GpuVendor::Nvidia) || compositor == "hyprland" {
-            args.push("--use-angle=vulkan".into());
+        let angle_backend = ui
+            .angle_backend
+            .as_ref()
+            .map(|backend| backend.to_ascii_lowercase());
+        let using_vulkan_angle = matches!(angle_backend.as_deref(), Some("vulkan"));
+        if let Some(ref backend) = angle_backend {
+            args.push(format!("--use-angle={backend}"));
+        } else if matches!(ui.gpu_vendor, GpuVendor::Nvidia) {
+            args.push("--use-angle=gl".into());
         }
 
         let mut enable_features: Vec<String> = vec![
@@ -274,11 +276,19 @@ impl BrowserEngine for ChromiumEngine {
             "--gpu-rasterization".into(),
             "--enable-gpu-memory-buffer-video-frames".into(),
             "--ignore-gpu-blocklist".into(),
-            "--use-vulkan".into(),
             "--remote-debugging-port=0".into(),
             "--disable-background-networking".into(),
             "--password-store=basic".into(),
         ]);
+
+        let should_use_vulkan = if matches!(ui.gpu_vendor, GpuVendor::Nvidia) {
+            using_vulkan_angle || use_wayland
+        } else {
+            true
+        };
+        if should_use_vulkan {
+            args.push("--use-vulkan".into());
+        }
 
         if !hardware_decode_supported {
             args.push("--disable-accelerated-video-decode".into());
@@ -320,6 +330,14 @@ impl BrowserEngine for ChromiumEngine {
         let mut env_pairs = Vec::new();
         if use_wayland && (wayland_env.is_some() || ui.wayland_available) {
             env_pairs.push(("XDG_CURRENT_DESKTOP".into(), "sway:GNOME:Archon".into()));
+            env_pairs.push(("EGL_PLATFORM".into(), "wayland".into()));
+        }
+
+        if matches!(ui.gpu_vendor, GpuVendor::Nvidia) {
+            env_pairs.push(("__GLX_VENDOR_LIBRARY_NAME".into(), "nvidia".into()));
+            if use_wayland && matches!(ui.nvidia_driver_kind, Some(NvidiaDriverKind::OpenKernel)) {
+                env_pairs.push(("GBM_BACKEND".into(), "nvidia-drm".into()));
+            }
         }
 
         let filtered_flags: Vec<String> = args
@@ -454,6 +472,7 @@ mod tests {
             wayland_error: None,
             compositor: None,
             gpu_vendor: GpuVendor::Unknown,
+            nvidia_driver_kind: None,
             vaapi_available: false,
             nvdec_available: false,
             gpu_driver_version: None,
@@ -545,6 +564,78 @@ mod tests {
     }
 
     #[test]
+    fn chromium_nvidia_x11_prefers_gl_angle() {
+        let engine = ChromiumEngine {
+            config: EngineSpecificConfig {
+                binary_path: Some(PathBuf::from("/usr/bin/chromium")),
+                extra_args: vec![],
+                env: vec![],
+            },
+        };
+        let profile = dummy_profile();
+        let mut ui = default_ui_report();
+        ui.gpu_vendor = GpuVendor::Nvidia;
+        ui.session_type = Some("x11".into());
+        ui.angle_backend = Some("gl".into());
+        ui.nvidia_driver_kind = Some(NvidiaDriverKind::Proprietary);
+        let request = privacy_request();
+        let command = engine.build_command(&profile, &request, &ui).unwrap();
+        assert!(command.args().iter().any(|arg| arg == "--use-angle=gl"));
+        assert!(
+            command.args().iter().all(|arg| arg != "--use-vulkan"),
+            "unexpected --use-vulkan flag for NVIDIA on X11"
+        );
+        assert!(
+            command
+                .env()
+                .iter()
+                .any(|(key, value)| key == "__GLX_VENDOR_LIBRARY_NAME" && value == "nvidia")
+        );
+    }
+
+    #[test]
+    fn chromium_nvidia_open_wayland_sets_gbm_backend() {
+        let engine = ChromiumEngine {
+            config: EngineSpecificConfig {
+                binary_path: Some(PathBuf::from("/usr/bin/chromium")),
+                extra_args: vec![],
+                env: vec![],
+            },
+        };
+        let profile = dummy_profile();
+        let mut ui = default_ui_report();
+        ui.prefer_wayland = true;
+        ui.wayland_display = Some("wayland-1".into());
+        ui.session_type = Some("wayland".into());
+        ui.wayland_available = true;
+        ui.gpu_vendor = GpuVendor::Nvidia;
+        ui.nvidia_driver_kind = Some(NvidiaDriverKind::OpenKernel);
+        ui.angle_backend = Some("vulkan".into());
+        let request = privacy_request();
+        let command = engine.build_command(&profile, &request, &ui).unwrap();
+        assert!(command.args().iter().any(|arg| arg == "--use-angle=vulkan"));
+        assert!(command.args().iter().any(|arg| arg == "--use-vulkan"));
+        assert!(
+            command
+                .env()
+                .iter()
+                .any(|(key, value)| key == "GBM_BACKEND" && value == "nvidia-drm")
+        );
+        assert!(
+            command
+                .env()
+                .iter()
+                .any(|(key, value)| key == "EGL_PLATFORM" && value == "wayland")
+        );
+        assert!(
+            command
+                .env()
+                .iter()
+                .any(|(key, value)| key == "__GLX_VENDOR_LIBRARY_NAME" && value == "nvidia")
+        );
+    }
+
+    #[test]
     fn chromium_unsafe_webgpu_flag_is_opt_in() {
         let engine = ChromiumEngine {
             config: EngineSpecificConfig {
@@ -592,6 +683,37 @@ mod tests {
                 .env()
                 .iter()
                 .any(|(key, value)| key == "XDG_CONFIG_HOME" && value == "/tmp/config")
+        );
+    }
+
+    #[test]
+    fn chromium_wayland_override_forces_x11() {
+        let engine = ChromiumEngine {
+            config: EngineSpecificConfig {
+                binary_path: Some(PathBuf::from("/usr/bin/chromium")),
+                extra_args: vec![],
+                env: vec![],
+            },
+        };
+        let profile = dummy_profile();
+        let mut ui = default_ui_report();
+        ui.prefer_wayland = false;
+        ui.wayland_display = Some("wayland-1".into());
+        ui.session_type = Some("wayland".into());
+        ui.wayland_available = true;
+        let request = privacy_request();
+        let command = engine.build_command(&profile, &request, &ui).unwrap();
+        assert!(
+            command
+                .args()
+                .iter()
+                .any(|arg| arg == "--ozone-platform=x11")
+        );
+        assert!(
+            command
+                .args()
+                .iter()
+                .all(|arg| arg != "--ozone-platform=wayland")
         );
     }
 }

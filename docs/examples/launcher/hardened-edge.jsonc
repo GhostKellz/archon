@@ -1,0 +1,40 @@
+// Hardened Chromium Max profile with GhostDNS and local AI only.
+{
+  "default_engine": "edge",
+  "default_mode": "privacy",
+  "policy_profile": "hardened",
+  "ghostdns": {
+    "enabled": true,
+    "doh_listen": "127.0.0.1:443",
+    "doh_path": "/dns-query",
+    "metrics_listen": "127.0.0.1:9095",
+    "upstream_profile": "quad9"
+  },
+  "crypto": {
+    "resolvers": {
+      "ud_api_key_env": "UNSTOPPABLE_API_KEY",
+      "ipfs_autopin": false
+    }
+  },
+  "ai_host": {
+    "enabled": false
+  },
+  "ai": {
+    "default_provider": "ollama-local",
+    "providers": [
+      {
+        "name": "ollama-local",
+        "label": "Local Grok",
+        "kind": "local-ollama",
+        "endpoint": "http://127.0.0.1:11434",
+        "default_model": "mistral",
+        "enabled": true
+      }
+    ]
+  },
+  "ui": {
+    "prefer_wayland": true,
+    "allow_x11_fallback": true,
+    "unsafe_webgpu_default": false
+  }
+}

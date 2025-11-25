@@ -18,7 +18,7 @@ use std::{fs, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result};
 use chrono::{Duration, Utc};
-use tracing::{info, warn};
+use tracing::{info, info_span, warn};
 use uuid::Uuid;
 
 use crate::ai::{AiBridge, AiChatPrompt, AiChatResponse, AiHealthReport, BlockingAiHttp};
@@ -218,6 +218,18 @@ impl Launcher {
         let engine_kind = request.engine.unwrap_or(self.settings.default_engine);
         let mode = request.mode;
 
+        let span = info_span!(
+            "launcher.run",
+            profile = %request.profile,
+            engine = ?engine_kind,
+            mode = ?mode,
+            execute = request.execute,
+            unsafe_webgpu = request.unsafe_webgpu,
+            prefer_wayland = request.prefer_wayland,
+            allow_x11_fallback = request.allow_x11_fallback
+        );
+        let _span_guard = span.enter();
+
         let mut profile = self
             .profiles
             .ensure_profile(&request.profile)
@@ -228,7 +240,33 @@ impl Launcher {
             .with_context(|| format!("Engine {engine_kind} is not registered"))?;
 
         if engine_kind == EngineKind::Edge {
-            if request.policy_path.is_none() {
+            if self.settings.ghostdns.enabled {
+                let sync_report = self.sync_ghostdns_policy(false)?;
+                if matches!(
+                    sync_report.ghostdns.action,
+                    ConfigWriteAction::Created | ConfigWriteAction::Updated
+                ) {
+                    info!(
+                        path = %sync_report.ghostdns.path.display(),
+                        action = ?sync_report.ghostdns.action,
+                        "ensured GhostDNS config"
+                    );
+                }
+                if request.policy_path.is_none() {
+                    if matches!(
+                        sync_report.policy.action,
+                        PolicyWriteAction::Created | PolicyWriteAction::Updated
+                    ) {
+                        info!(
+                            path = %sync_report.policy.path.display(),
+                            action = ?sync_report.policy.action,
+                            template = %sync_report.doh_template,
+                            "ensured Chromium policy template"
+                        );
+                    }
+                    request.policy_path = Some(sync_report.policy.path.clone());
+                }
+            } else if request.policy_path.is_none() {
                 let doh_template = self.ghostdns.doh_template();
                 let policy_outcome = crate::policy::ensure_chromium_policy(
                     self.profiles.profile_root(),
@@ -242,6 +280,7 @@ impl Launcher {
                     info!(
                         path = %policy_outcome.path.display(),
                         action = ?policy_outcome.action,
+                        template = %doh_template,
                         "ensured Chromium policy template"
                     );
                 }
@@ -263,7 +302,9 @@ impl Launcher {
 
         let session_id = Uuid::new_v4();
         let launched_at = Utc::now();
-        let ui_report = self.ui.health();
+        let ui_report = self
+            .ui
+            .health_with_overrides(request.prefer_wayland, request.allow_x11_fallback);
         let command = engine.build_command(&profile, &request, &ui_report)?;
 
         info!(
@@ -349,6 +390,8 @@ impl Launcher {
         mode: LaunchMode,
         execute: bool,
         unsafe_webgpu: bool,
+        prefer_wayland: Option<bool>,
+        allow_x11_fallback: Option<bool>,
     ) -> Result<LaunchOutcome> {
         let request = LaunchRequest {
             engine: Some(EngineKind::Edge),
@@ -356,6 +399,8 @@ impl Launcher {
             mode,
             execute,
             unsafe_webgpu,
+            prefer_wayland,
+            allow_x11_fallback,
             policy_path: None,
             xdg_config_home: None,
             open_url: None,
@@ -478,6 +523,7 @@ impl Launcher {
                 });
             }
         }
+        let telemetry = crate::telemetry::telemetry_report(&self.settings.telemetry)?;
 
         Ok(DiagnosticsReport {
             profile_root,
@@ -490,6 +536,7 @@ impl Launcher {
             ghostdns,
             ui,
             profile_badges,
+            telemetry,
         })
     }
 
@@ -598,6 +645,7 @@ pub struct DiagnosticsReport {
     pub ghostdns: GhostDnsHealthReport,
     pub ui: UiHealthReport,
     pub profile_badges: Vec<ProfileBadgeSummary>,
+    pub telemetry: crate::telemetry::TelemetryDiagnostics,
 }
 
 #[derive(Debug, Clone)]

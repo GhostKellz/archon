@@ -12,7 +12,6 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use clap::{ArgAction, Parser};
 use tracing::info;
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(name = "archon", author = "GhostKellz", version, about = "Hybrid Archon browser launcher", long_about = None)]
@@ -36,6 +35,14 @@ pub struct Cli {
     /// Enable the experimental `--enable-unsafe-webgpu` toggle.
     #[arg(long, action = ArgAction::SetTrue, alias = "enable-unsafe-webgpu")]
     pub unsafe_webgpu: bool,
+
+    /// Force Wayland usage for this launch (overrides config default).
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "prefer_x11")]
+    pub prefer_wayland: bool,
+
+    /// Force X11 usage for this launch (overrides config default).
+    #[arg(long, action = ArgAction::SetTrue, conflicts_with = "prefer_wayland")]
+    pub prefer_x11: bool,
 
     /// Increase logging verbosity.
     #[arg(long, action = ArgAction::SetTrue)]
@@ -100,20 +107,6 @@ pub struct Cli {
     /// Optional omnibox target (e.g., ens:vitalik.eth).
     #[arg(value_name = "TARGET")]
     pub target: Option<String>,
-}
-
-fn init_tracing(verbose: bool) {
-    let default_level = if verbose {
-        "archon=debug"
-    } else {
-        "archon=info"
-    };
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .try_init();
 }
 
 fn display_bool(value: Option<bool>) -> &'static str {
@@ -384,6 +377,7 @@ fn print_diagnostics(launcher: &Launcher) -> Result<()> {
         ghostdns,
         ui,
         profile_badges,
+        telemetry,
     } = report;
 
     let sync_size = fs::metadata(&sync_log).map(|meta| meta.len()).ok();
@@ -424,6 +418,40 @@ fn print_diagnostics(launcher: &Launcher) -> Result<()> {
                     engine.kind, engine.label
                 );
             }
+        }
+    }
+
+    println!("\n  Telemetry:");
+    println!("    - enabled         : {}", telemetry.enabled);
+    let collector_display = telemetry.collector_url.as_deref().unwrap_or("(unset)");
+    println!("    - collector_url   : {}", collector_display);
+    if let Some(dir) = telemetry.buffer_dir {
+        println!("    - buffer_dir      : {}", dir.display());
+    } else {
+        println!("    - buffer_dir      : (default)");
+    }
+    if let Some(limit) = telemetry.max_buffer_bytes {
+        println!("    - max_buffer_bytes: {}", limit);
+    } else {
+        println!("    - max_buffer_bytes: (unbounded)");
+    }
+
+    println!("    - traces.enabled  : {}", telemetry.trace.enabled);
+    if let Some(dir) = telemetry.trace.directory {
+        println!("    - traces.dir      : {}", dir.display());
+    } else {
+        println!("    - traces.dir      : (default)");
+    }
+    if let Some(active) = telemetry.trace.active_file {
+        println!("    - traces.active   : {}", active.display());
+    }
+    if let Some(endpoint) = telemetry.trace.otlp_endpoint {
+        println!("    - traces.otlp     : {endpoint}");
+    }
+    if !telemetry.trace.recent_files.is_empty() {
+        println!("    - traces.recent   :");
+        for path in telemetry.trace.recent_files.into_iter().take(3) {
+            println!("        • {}", path.display());
         }
     }
 
@@ -723,9 +751,11 @@ fn print_diagnostics(launcher: &Launcher) -> Result<()> {
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
-    init_tracing(cli.verbose);
-
     let mut launcher = Launcher::bootstrap(cli.config.clone())?;
+    let telemetry_settings = launcher.settings().telemetry.clone();
+    if let Err(err) = crate::telemetry::init_tracing("archon", cli.verbose, &telemetry_settings) {
+        eprintln!("warning: failed to initialise tracing subscriber: {err}");
+    }
 
     if cli.sync_ghostdns_policy {
         let report = launcher.sync_ghostdns_policy(cli.force)?;
@@ -915,9 +945,24 @@ pub fn run() -> Result<()> {
     } else {
         launcher.settings().ui.unsafe_webgpu_default
     };
+    let prefer_wayland_override = if cli.prefer_wayland {
+        Some(true)
+    } else if cli.prefer_x11 {
+        Some(false)
+    } else {
+        None
+    };
+    let allow_x11_override: Option<bool> = None;
 
     let outcome = if engine == EngineKind::Edge {
-        launcher.spawn_chromium_max(cli.profile.clone(), cli.mode, cli.execute, unsafe_webgpu)?
+        launcher.spawn_chromium_max(
+            cli.profile.clone(),
+            cli.mode,
+            cli.execute,
+            unsafe_webgpu,
+            prefer_wayland_override,
+            allow_x11_override,
+        )?
     } else {
         let request = LaunchRequest {
             engine: Some(engine),
@@ -925,6 +970,8 @@ pub fn run() -> Result<()> {
             mode: cli.mode,
             execute: cli.execute,
             unsafe_webgpu: false,
+            prefer_wayland: prefer_wayland_override,
+            allow_x11_fallback: allow_x11_override,
             policy_path: None,
             xdg_config_home: None,
             open_url: None,
@@ -974,6 +1021,15 @@ fn report_config_action(label: &str, outcome: &crate::ghostdns::ConfigWriteOutco
 }
 
 fn handle_target(launcher: &mut Launcher, cli: &Cli, target: &str) -> Result<bool> {
+    let prefer_wayland_override = if cli.prefer_wayland {
+        Some(true)
+    } else if cli.prefer_x11 {
+        Some(false)
+    } else {
+        None
+    };
+    let allow_x11_override: Option<bool> = None;
+
     if let Some(invocation) = parse_ens_invocation(target) {
         let resolution = launcher.resolve_name(&invocation.name)?;
         let ens_name = resolution.name.clone();
@@ -1002,6 +1058,8 @@ fn handle_target(launcher: &mut Launcher, cli: &Cli, target: &str) -> Result<boo
                 mode: cli.mode,
                 execute,
                 unsafe_webgpu,
+                prefer_wayland: prefer_wayland_override,
+                allow_x11_fallback: allow_x11_override,
                 policy_path: None,
                 xdg_config_home: None,
                 open_url: Some(destination.clone()),

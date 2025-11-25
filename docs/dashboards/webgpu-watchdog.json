@@ -1,0 +1,280 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_PROMETHEUS",
+      "label": "Prometheus",
+      "description": "Primary Prometheus data source",
+      "type": "datasource",
+      "pluginId": "prometheus",
+      "pluginName": "Prometheus"
+    }
+  ],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+    { "type": "panel", "id": "stat", "name": "Stat", "version": "10.0.0" },
+    { "type": "panel", "id": "timeseries", "name": "Time series", "version": "10.0.0" },
+    { "type": "panel", "id": "table", "name": "Table", "version": "10.0.0" }
+  ],
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": "${DS_PROMETHEUS}",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [
+            { "type": "value", "value": "0", "text": "Healthy" },
+            { "type": "value", "value": "1", "text": "Unstable" },
+            { "type": "value", "value": "2", "text": "Failed" }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 2 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "archon_webgpu_watchdog_status{workload=\"$workload\"}",
+          "legendFormat": "status"
+        }
+      ],
+      "title": "Watchdog status",
+      "type": "stat"
+    },
+    {
+      "datasource": "${DS_PROMETHEUS}",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 6, "y": 0 },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "expr": "archon_webgpu_watchdog_attempts_total{workload=\"$workload\"}",
+          "legendFormat": "attempts"
+        }
+      ],
+      "title": "Attempts (last run)",
+      "type": "stat"
+    },
+    {
+      "datasource": "${DS_PROMETHEUS}",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 0 },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "expr": "archon_webgpu_watchdog_frames_rendered{workload=\"$workload\"}",
+          "legendFormat": "frames"
+        }
+      ],
+      "title": "Frames rendered (final attempt)",
+      "type": "stat"
+    },
+    {
+      "datasource": "${DS_PROMETHEUS}",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 0 },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "reduceOptions": {
+          "calcs": ["lastNotNull"],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "expr": "archon_webgpu_watchdog_duration_seconds{workload=\"$workload\"}",
+          "legendFormat": "duration"
+        }
+      ],
+      "title": "Duration (final attempt)",
+      "type": "stat"
+    },
+    {
+      "datasource": "${DS_PROMETHEUS}",
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "archon_webgpu_watchdog_duration_seconds" },
+            "properties": [
+              { "id": "unit", "value": "s" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "archon_webgpu_watchdog_frames_rendered" },
+            "properties": [
+              { "id": "unit", "value": "short" }
+            ]
+          }
+        ]
+      },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 8 },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "table",
+          "placement": "right"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "expr": "archon_webgpu_watchdog_frames_rendered{workload=\"$workload\"}",
+          "legendFormat": "frames"
+        },
+        {
+          "expr": "archon_webgpu_watchdog_duration_seconds{workload=\"$workload\"}",
+          "legendFormat": "duration"
+        }
+      ],
+      "title": "Trend: Frames & duration",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "${DS_PROMETHEUS}",
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 17 },
+      "id": 6,
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "expr": "archon_webgpu_watchdog_violation_info{workload=\"$workload\"}",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "violation"
+        }
+      ],
+      "title": "Active violations",
+      "transformations": [
+        {
+          "id": "labelsToFields",
+          "options": {
+            "valueLabel": "value"
+          }
+        },
+        {
+          "id": "filterFieldsByName",
+          "options": {
+            "include": {
+              "names": ["violation", "Value"]
+            }
+          }
+        }
+      ],
+      "type": "table"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 38,
+  "style": "dark",
+  "tags": ["archon", "webgpu"],
+  "templating": {
+    "list": [
+      {
+        "name": "Datasource",
+        "type": "datasource",
+        "label": "Prometheus",
+        "query": "prometheus",
+        "current": { "selected": true, "text": "Prometheus", "value": "Prometheus" }
+      },
+      {
+        "name": "workload",
+        "type": "query",
+        "label": "Workload",
+        "datasource": "${DS_PROMETHEUS}",
+        "query": "label_values(archon_webgpu_watchdog_status, workload)",
+        "refresh": 2
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "",
+  "title": "WebGPU Watchdog Overview",
+  "uid": "webgpu-watchdog",
+  "version": 1,
+  "weekStart": ""
+}

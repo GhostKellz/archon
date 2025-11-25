@@ -188,6 +188,8 @@ pub struct LaunchSettings {
     #[serde(default)]
     pub mcp: McpSettings,
     #[serde(default)]
+    pub telemetry: TelemetrySettings,
+    #[serde(default)]
     pub policy_profile: PolicyProfile,
     #[serde(default)]
     pub first_run_complete: bool,
@@ -213,6 +215,7 @@ impl Default for LaunchSettings {
             ghostdns: GhostDnsSettings::default(),
             ui: UiSettings::default(),
             mcp: McpSettings::default(),
+            telemetry: TelemetrySettings::default(),
             policy_profile: PolicyProfile::default(),
             first_run_complete: false,
         }
@@ -602,8 +605,16 @@ pub struct GhostDnsSettings {
     pub dot_cert_path: Option<PathBuf>,
     #[serde(default)]
     pub dot_key_path: Option<PathBuf>,
+    #[serde(default = "GhostDnsSettings::default_doq_listen")]
+    pub doq_listen: String,
+    #[serde(default)]
+    pub doq_cert_path: Option<PathBuf>,
+    #[serde(default)]
+    pub doq_key_path: Option<PathBuf>,
     #[serde(default = "GhostDnsSettings::default_metrics_listen")]
     pub metrics_listen: Option<String>,
+    #[serde(default = "GhostDnsSettings::default_ipfs_gateway_listen")]
+    pub ipfs_gateway_listen: Option<String>,
     #[serde(default)]
     pub dnssec_enforce: bool,
     #[serde(default = "GhostDnsSettings::default_dnssec_fail_open")]
@@ -627,8 +638,16 @@ impl GhostDnsSettings {
         "127.0.0.1:853".into()
     }
 
+    fn default_doq_listen() -> String {
+        "auto".into()
+    }
+
     fn default_metrics_listen() -> Option<String> {
         Some("127.0.0.1:9095".into())
+    }
+
+    fn default_ipfs_gateway_listen() -> Option<String> {
+        Some("127.0.0.1:8080".into())
     }
 
     fn default_dnssec_fail_open() -> bool {
@@ -650,7 +669,11 @@ impl Default for GhostDnsSettings {
             dot_listen: Self::default_dot_listen(),
             dot_cert_path: None,
             dot_key_path: None,
+            doq_listen: Self::default_doq_listen(),
+            doq_cert_path: None,
+            doq_key_path: None,
             metrics_listen: Self::default_metrics_listen(),
+            ipfs_gateway_listen: Self::default_ipfs_gateway_listen(),
             dnssec_enforce: false,
             dnssec_fail_open: Self::default_dnssec_fail_open(),
             ecs_passthrough: false,
@@ -677,6 +700,97 @@ impl Default for McpSettings {
     }
 }
 
+/// Opt-in telemetry configuration shared across Archon services.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelemetrySettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub collector_url: Option<String>,
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    #[serde(default)]
+    pub buffer_dir: Option<PathBuf>,
+    #[serde(default)]
+    pub max_buffer_bytes: Option<u64>,
+    #[serde(default)]
+    pub traces: TraceSettings,
+}
+
+impl Default for TelemetrySettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            collector_url: None,
+            api_key_env: None,
+            buffer_dir: None,
+            max_buffer_bytes: Some(512 * 1024),
+            traces: TraceSettings::default(),
+        }
+    }
+}
+
+/// Controls structured tracing export for Archon services.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub directory: Option<PathBuf>,
+    #[serde(default = "TraceSettings::default_max_files")]
+    pub max_files: usize,
+    #[serde(default)]
+    pub otlp: Option<TraceOtlpSettings>,
+}
+
+impl TraceSettings {
+    const fn default_max_files() -> usize {
+        10
+    }
+}
+
+impl Default for TraceSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            directory: None,
+            max_files: Self::default_max_files(),
+            otlp: None,
+        }
+    }
+}
+
+/// Optional OTLP export configuration for traces.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceOtlpSettings {
+    pub endpoint: String,
+    #[serde(default)]
+    pub protocol: TraceOtlpProtocol,
+    #[serde(default)]
+    pub headers: Vec<TraceOtlpHeader>,
+}
+
+/// Arbitrary header to attach to OTLP export requests.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TraceOtlpHeader {
+    pub name: String,
+    pub value: String,
+}
+
+/// Transport protocols supported for OTLP trace export.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TraceOtlpProtocol {
+    Grpc,
+    HttpProtobuf,
+}
+
+impl Default for TraceOtlpProtocol {
+    fn default() -> Self {
+        TraceOtlpProtocol::Grpc
+    }
+}
+
 /// Docker-specific MCP descriptors so Archon can orchestrate sidecars.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct McpDockerSettings {
@@ -697,7 +811,7 @@ pub struct McpConnector {
     pub enabled: bool,
 }
 
-/// Settings controlling ENS / Unstoppable resolution.
+/// Settings controlling ENS / Unstoppable / Hedera / XRPL resolution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CryptoResolverSettings {
     #[serde(default = "CryptoResolverSettings::default_ens_endpoint")]
@@ -706,6 +820,14 @@ pub struct CryptoResolverSettings {
     pub ud_endpoint: String,
     #[serde(default)]
     pub ud_api_key_env: Option<String>,
+    #[serde(default = "CryptoResolverSettings::default_hedera_endpoint")]
+    pub hedera_endpoint: String,
+    #[serde(default)]
+    pub hedera_api_key_env: Option<String>,
+    #[serde(default = "CryptoResolverSettings::default_xrpl_endpoint")]
+    pub xrpl_endpoint: String,
+    #[serde(default)]
+    pub xrpl_api_key_env: Option<String>,
     #[serde(default = "CryptoResolverSettings::default_ipfs_gateway")]
     pub ipfs_gateway: Option<String>,
     #[serde(default = "CryptoResolverSettings::default_ipfs_api")]
@@ -723,6 +845,14 @@ impl CryptoResolverSettings {
         "https://resolve.unstoppabledomains.com/domains".into()
     }
 
+    fn default_hedera_endpoint() -> String {
+        "https://mainnet-public.mirrornode.hedera.com/api/v1/accounts".into()
+    }
+
+    fn default_xrpl_endpoint() -> String {
+        "https://xrplns.io/api/v1/domains".into()
+    }
+
     fn default_ipfs_gateway() -> Option<String> {
         Some("http://127.0.0.1:8080".into())
     }
@@ -738,6 +868,10 @@ impl Default for CryptoResolverSettings {
             ens_endpoint: Self::default_ens_endpoint(),
             ud_endpoint: Self::default_ud_endpoint(),
             ud_api_key_env: Some("UNSTOPPABLE_API_KEY".into()),
+            hedera_endpoint: Self::default_hedera_endpoint(),
+            hedera_api_key_env: Some("HEDERA_API_KEY".into()),
+            xrpl_endpoint: Self::default_xrpl_endpoint(),
+            xrpl_api_key_env: Some("XRPL_API_KEY".into()),
             ipfs_gateway: Self::default_ipfs_gateway(),
             ipfs_api: Self::default_ipfs_api(),
             ipfs_autopin: false,
@@ -930,6 +1064,8 @@ pub struct LaunchRequest {
     pub mode: LaunchMode,
     pub execute: bool,
     pub unsafe_webgpu: bool,
+    pub prefer_wayland: Option<bool>,
+    pub allow_x11_fallback: Option<bool>,
     pub policy_path: Option<PathBuf>,
     pub xdg_config_home: Option<PathBuf>,
     pub open_url: Option<String>,
@@ -943,6 +1079,8 @@ impl Default for LaunchRequest {
             mode: LaunchMode::Privacy,
             execute: false,
             unsafe_webgpu: false,
+            prefer_wayland: None,
+            allow_x11_fallback: None,
             policy_path: None,
             xdg_config_home: None,
             open_url: None,

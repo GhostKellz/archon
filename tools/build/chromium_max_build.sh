@@ -34,6 +34,8 @@ GPG_KEY=""
 SIGN_COSIGN=0
 COSIGN_KEY_REF=""
 COSIGN_IDENTITY=""
+BUNDLE=0
+BUNDLE_NAME=""
 
 usage() {
     cat <<'EOF'
@@ -53,6 +55,8 @@ Options:
   --source-epoch TS     Override SOURCE_DATE_EPOCH (seconds since epoch)
   --logs-dir DIR        Directory for command logs (default: <out>/logs)
   --dist-dir DIR        Directory for distribution artifacts (default: <out>/dist)
+    --bundle              Archive the entire build directory into <dist>/chromium-max-*.tar.{zst,gz}
+    --bundle-name NAME    Override the archive base name (implies --bundle)
   --artifact PATH       Additional artifact (relative to out or absolute) to checksum; may be repeated
   --sbom-tool TOOL      SBOM generator (auto|syft|none; default: auto)
   --sign-gpg            Sign the checksum manifest with GPG (uses default key unless --gpg-key is set)
@@ -133,6 +137,10 @@ while [[ $# -gt 0 ]]; do
             LOG_DIR="$2"; shift 2 ;;
         --dist-dir)
             DIST_DIR="$2"; shift 2 ;;
+        --bundle)
+            BUNDLE=1; shift ;;
+        --bundle-name)
+            BUNDLE=1; BUNDLE_NAME="$2"; shift 2 ;;
         --artifact)
             ARTIFACT_PATHS+=("$2"); shift 2 ;;
         --sbom-tool)
@@ -250,6 +258,43 @@ else
             CHECKSUM_TARGETS+=("${BUILD_DIR}/${artifact}")
         fi
     done
+fi
+
+if [[ ${BUNDLE} -eq 1 ]]; then
+    bundle_basename="${BUNDLE_NAME}"
+    if [[ -z "${bundle_basename}" ]]; then
+        bundle_rev="unknown"
+        if git -C "${SOURCE_DIR}" rev-parse --verify HEAD >/dev/null 2>&1; then
+            bundle_rev=$(git -C "${SOURCE_DIR}" rev-parse --short HEAD)
+        fi
+        if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
+            bundle_timestamp=$(date -u -d "@${SOURCE_DATE_EPOCH}" +%Y%m%dT%H%M%SZ 2>/dev/null || date -u +%Y%m%dT%H%M%SZ)
+        else
+            bundle_timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+        fi
+        bundle_basename="chromium-max-${bundle_rev}-${bundle_timestamp}"
+    fi
+
+    if command -v zstd >/dev/null 2>&1; then
+        TAR_CMD=(tar --use-compress-program "zstd -T0 -19" -cf)
+        bundle_suffix=".tar.zst"
+    else
+        TAR_CMD=(tar -czf)
+        bundle_suffix=".tar.gz"
+    fi
+
+    bundle_path="${DIST_DIR}/${bundle_basename}${bundle_suffix}"
+    build_parent=$(dirname "${BUILD_DIR}")
+    build_name=$(basename "${BUILD_DIR}")
+
+    log "Creating bundle ${bundle_path}"
+    if [[ ${DRY_RUN} -eq 0 && -f "${bundle_path}" ]]; then
+        rm -f "${bundle_path}"
+    fi
+    run "${TAR_CMD[@]}" "${bundle_path}" -C "${build_parent}" "${build_name}"
+    if [[ ${DRY_RUN} -eq 0 ]]; then
+        CHECKSUM_TARGETS+=("${bundle_path}")
+    fi
 fi
 
 CHECKSUM_FILE="${DIST_DIR}/checksums.sha256"

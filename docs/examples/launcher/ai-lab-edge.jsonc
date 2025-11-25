@@ -1,0 +1,69 @@
+// AI-forward Chromium Max profile with remote connectors and auto-managed GhostDNS.
+{
+  "default_engine": "edge",
+  "default_mode": "ai",
+  "policy_profile": "default",
+  "ghostdns": {
+    "enabled": true,
+    "doh_listen": "127.0.0.1:9443",
+    "doh_path": "/archon-dns",
+    "dot_listen": "127.0.0.1:853",
+    "metrics_listen": "127.0.0.1:9095",
+    "upstream_profile": "mullvad"
+  },
+  "ai_host": {
+    "enabled": true,
+    "listen_addr": "127.0.0.1:8805"
+  },
+  "ai": {
+    "default_provider": "openai",
+    "providers": [
+      {
+        "name": "ollama-local",
+        "kind": "local-ollama",
+        "endpoint": "http://127.0.0.1:11434",
+        "default_model": "llama3",
+        "enabled": true
+      },
+      {
+        "name": "openai",
+        "kind": "openai",
+        "endpoint": "https://api.openai.com/v1",
+        "default_model": "gpt-4o-mini",
+        "api_key_env": "OPENAI_API_KEY",
+        "chat_path": "chat/completions",
+        "capabilities": {
+          "vision": true,
+          "audio": true
+        },
+        "temperature": 0.2,
+        "enabled": true
+      }
+    ]
+  },
+  "mcp": {
+    "docker": {
+      "compose_file": "mcp/docker-compose.yml",
+      "auto_start": true
+    },
+    "connectors": [
+      {
+        "name": "notes-stack",
+        "kind": "http-json",
+        "endpoint": "http://127.0.0.1:8765",
+        "enabled": true
+      }
+    ]
+  },
+  "crypto": {
+    "default_network": "ethereum-mainnet",
+    "resolvers": {
+      "ud_api_key_env": "UNSTOPPABLE_API_KEY"
+    }
+  },
+  "ui": {
+    "prefer_wayland": true,
+    "allow_x11_fallback": true,
+    "unsafe_webgpu_default": false
+  }
+}

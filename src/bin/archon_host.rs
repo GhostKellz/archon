@@ -1,29 +1,35 @@
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{convert::Infallible, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use archon::ai::{AiAttachment, AiAttachmentKind, AiBridge, AiChatPrompt, AiChatResponse};
 use archon::ai::{AiChatHistoryEntry, AiChatRole};
 use archon::config::{AiHostSettings, LaunchSettings, default_config_path};
+use archon::crypto::CryptoStack;
 use archon::host::AiHost;
 use archon::mcp::{McpOrchestrator, McpToolCallResponse};
+use archon::telemetry::ServiceTelemetry;
 use archon::transcript::{TranscriptSource, TranscriptStore};
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::IntoResponse,
+    response::sse::{Event, KeepAlive, Sse},
     routing::{get, post},
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use clap::{ArgAction, Parser};
+use futures_util::stream::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
+use tokio::sync::mpsc;
 use tokio::{io, task};
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::{error, info, warn};
-use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
 
 #[derive(Parser, Debug)]
@@ -59,6 +65,7 @@ struct AppState {
     bridge: Arc<AiBridge>,
     mcp: Arc<McpOrchestrator>,
     transcripts: Arc<TranscriptStore>,
+    crypto: Arc<CryptoStack>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -217,20 +224,6 @@ impl ChatRequest {
     }
 }
 
-fn init_tracing(verbose: bool) {
-    let default_level = if verbose {
-        "archon=debug"
-    } else {
-        "archon=info"
-    };
-    let filter =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_level));
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .try_init();
-}
-
 fn resolve_launcher_config(override_path: Option<&PathBuf>) -> Result<PathBuf> {
     match override_path {
         Some(path) => Ok(path.clone()),
@@ -251,25 +244,66 @@ fn apply_overrides(settings: &mut AiHostSettings, args: &Args) {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    init_tracing(args.verbose);
-
     let launcher_config = resolve_launcher_config(args.config.as_ref())?;
     let mut settings = LaunchSettings::load_or_default(&launcher_config)?;
     apply_overrides(&mut settings.ai_host, &args);
 
-    let transcript_root = settings.resolve_transcript_root()?;
-    let transcripts = Arc::new(TranscriptStore::new(transcript_root)?);
-    let ai_host = AiHost::from_settings(&settings.ai_host)?;
-    let bridge = Arc::new(AiBridge::from_settings(
+    if let Err(err) =
+        archon::telemetry::init_tracing("archon-host", args.verbose, &settings.telemetry)
+    {
+        eprintln!("warning: failed to initialise archon-host tracing: {err}");
+    }
+
+    let telemetry = ServiceTelemetry::new("archon-host", &settings.telemetry);
+    telemetry.record_startup();
+
+    let transcript_root = match settings.resolve_transcript_root() {
+        Ok(path) => path,
+        Err(err) => {
+            telemetry.record_error(&err);
+            return Err(err);
+        }
+    };
+    let transcripts = match TranscriptStore::new(transcript_root) {
+        Ok(store) => Arc::new(store),
+        Err(err) => {
+            telemetry.record_error(&err);
+            return Err(err);
+        }
+    };
+    let ai_host = match AiHost::from_settings(&settings.ai_host) {
+        Ok(host) => host,
+        Err(err) => {
+            telemetry.record_error(&err);
+            return Err(err);
+        }
+    };
+    let bridge = Arc::new(AiBridge::from_settings_with_telemetry(
         &settings.ai,
         Arc::clone(&transcripts),
+        Some(telemetry.clone()),
     ));
     let mcp = Arc::new(McpOrchestrator::from_settings(&settings.mcp));
+    let crypto = Arc::new(CryptoStack::from_settings(&settings.crypto));
 
-    let outcome = ai_host.write_default_config(&settings.ai, &settings.mcp, args.force)?;
+    let outcome = match ai_host.write_default_config(&settings.ai, &settings.mcp, args.force) {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            telemetry.record_error(&err);
+            return Err(err);
+        }
+    };
     info!(path = %outcome.path.display(), action = ?outcome.action, "ensured AI host provider config");
 
-    if let Some(sidecars) = mcp.ensure_sidecars()? {
+    let sidecars = match mcp.ensure_sidecars() {
+        Ok(sidecars) => sidecars,
+        Err(err) => {
+            telemetry.record_error(&err);
+            return Err(err);
+        }
+    };
+
+    if let Some(sidecars) = sidecars {
         let compose = sidecars
             .compose_file
             .as_ref()
@@ -300,33 +334,50 @@ async fn main() -> Result<()> {
 
     if args.stdio {
         info!("starting archon-host in stdio mode");
-        run_stdio(
+        let result = run_stdio(
             Arc::clone(&bridge),
             Arc::clone(&mcp),
             Arc::clone(&transcripts),
+            Arc::clone(&crypto),
         )
-        .await?;
-        return Ok(());
+        .await;
+
+        match &result {
+            Ok(_) => telemetry.record_shutdown(),
+            Err(err) => telemetry.record_error(err),
+        }
+
+        return result;
     }
 
-    let listen_addr: SocketAddr = settings
+    let listen_addr: SocketAddr = match settings
         .ai_host
         .listen_addr
         .parse()
-        .with_context(|| format!("invalid listen address: {}", settings.ai_host.listen_addr))?;
+        .with_context(|| format!("invalid listen address: {}", settings.ai_host.listen_addr))
+    {
+        Ok(addr) => addr,
+        Err(err) => {
+            telemetry.record_error(&err);
+            return Err(err);
+        }
+    };
 
     let state = AppState {
         bridge,
         mcp,
         transcripts,
+        crypto,
     };
     let router = Router::new()
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
         .route("/providers", get(providers_handler))
         .route("/chat", post(chat_handler))
+        .route("/chat/stream", post(chat_stream_handler))
         .route("/connectors", get(connectors_handler))
         .route("/tool-call", post(tool_call_handler))
+        .route("/resolve", get(resolve_handler))
         .route("/transcripts", get(transcripts_handler))
         .route("/transcripts/:id/json", get(transcript_json_handler))
         .route("/transcripts/:id/history", get(transcript_history_handler))
@@ -336,20 +387,35 @@ async fn main() -> Result<()> {
         )
         .with_state(state);
 
-    let listener = TcpListener::bind(listen_addr)
+    let listener = match TcpListener::bind(listen_addr)
         .await
-        .with_context(|| format!("failed to bind AI host listener at {}", listen_addr))?;
+        .with_context(|| format!("failed to bind AI host listener at {}", listen_addr))
+    {
+        Ok(listener) => listener,
+        Err(err) => {
+            telemetry.record_error(&err);
+            return Err(err);
+        }
+    };
     info!(addr = %listen_addr, "starting archon-host service");
 
-    axum::serve(listener, router)
+    let result = axum::serve(listener, router)
         .await
-        .context("AI host server terminated unexpectedly")
+        .context("AI host server terminated unexpectedly");
+
+    match &result {
+        Ok(_) => telemetry.record_shutdown(),
+        Err(err) => telemetry.record_error(err),
+    }
+
+    result
 }
 
 async fn run_stdio(
     bridge: Arc<AiBridge>,
     mcp: Arc<McpOrchestrator>,
     transcripts: Arc<TranscriptStore>,
+    _crypto: Arc<CryptoStack>,
 ) -> Result<()> {
     let mut stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -968,31 +1034,41 @@ async fn providers_handler(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
-async fn chat_handler(
-    State(state): State<AppState>,
-    Json(payload): Json<ChatRequest>,
-) -> Result<Json<AiChatResponse>, ApiError> {
+fn prepare_chat_prompt(
+    bridge: &AiBridge,
+    payload: ChatRequest,
+) -> Result<(Option<String>, AiChatPrompt), ApiError> {
     let provider = payload.provider.clone();
-    let bridge = Arc::clone(&state.bridge);
     let mut prompt = payload
         .into_prompt()
         .map_err(|err| ApiError::bad_request(err.to_string()))?;
 
     if prompt.history.is_empty() {
         if let Some(conversation_id) = prompt.conversation_id {
-            match bridge.conversation_history(conversation_id) {
+            let cached_id = conversation_id;
+            match bridge.conversation_history(cached_id) {
                 Ok(history) => {
                     if !history.is_empty() {
                         prompt.history = history;
                     }
                 }
                 Err(err) => {
-                    warn!(error = %err, conversation = %conversation_id, "failed to load transcript history for chat request");
+                    warn!(error = %err, conversation = %cached_id, "failed to load transcript history for chat request");
                 }
             }
+            prompt.conversation_id = Some(cached_id);
         }
     }
 
+    Ok((provider, prompt))
+}
+
+async fn chat_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<ChatRequest>,
+) -> Result<Json<AiChatResponse>, ApiError> {
+    let bridge = Arc::clone(&state.bridge);
+    let (provider, prompt) = prepare_chat_prompt(&bridge, payload)?;
     let chat_bridge = Arc::clone(&bridge);
 
     let response = task::spawn_blocking(move || {
@@ -1010,6 +1086,124 @@ async fn chat_handler(
     })?;
 
     Ok(Json(response))
+}
+
+async fn chat_stream_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<ChatRequest>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let bridge = Arc::clone(&state.bridge);
+    let (provider, prompt) = prepare_chat_prompt(&bridge, payload)?;
+    let chat_bridge = Arc::clone(&bridge);
+
+    let (tx, rx) = mpsc::channel::<Result<Event, String>>(64);
+
+    tokio::spawn(async move {
+        let started_event = Event::default()
+            .event("status")
+            .data(json!({ "stage": "started" }).to_string());
+        if tx.send(Ok(started_event)).await.is_err() {
+            return;
+        }
+
+        let chat_result = task::spawn_blocking(move || {
+            let client = archon::ai::BlockingAiHttp::default();
+            chat_bridge.chat_with_prompt(provider.as_deref(), prompt, &client)
+        })
+        .await;
+
+        match chat_result {
+            Ok(Ok(response)) => {
+                let streaming_event = Event::default()
+                    .event("status")
+                    .data(json!({ "stage": "streaming" }).to_string());
+                if tx.send(Ok(streaming_event)).await.is_err() {
+                    return;
+                }
+
+                for chunk in chunk_response_text(&response.reply) {
+                    let event = Event::default()
+                        .event("delta")
+                        .data(json!({ "text": chunk }).to_string());
+                    if tx.send(Ok(event)).await.is_err() {
+                        return;
+                    }
+                }
+
+                match serde_json::to_string(&response) {
+                    Ok(serialised) => {
+                        let complete_event = Event::default().event("complete").data(serialised);
+                        let _ = tx.send(Ok(complete_event)).await;
+                    }
+                    Err(err) => {
+                        let _ = tx
+                            .send(Err(format!("failed to serialise chat response: {err}")))
+                            .await;
+                    }
+                }
+
+                let finished_event = Event::default()
+                    .event("status")
+                    .data(json!({ "stage": "finished" }).to_string());
+                let _ = tx.send(Ok(finished_event)).await;
+            }
+            Ok(Err(err)) => {
+                let _ = tx.send(Err(err.to_string())).await;
+            }
+            Err(join_err) => {
+                let _ = tx
+                    .send(Err(format!("worker task failed: {join_err}")))
+                    .await;
+            }
+        }
+    });
+
+    let stream = ReceiverStream::new(rx).map(|result| match result {
+        Ok(event) => Ok(event),
+        Err(message) => Ok(Event::default()
+            .event("error")
+            .data(json!({ "message": message }).to_string())),
+    });
+
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    ))
+}
+
+fn chunk_response_text(text: &str) -> Vec<String> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+    let segments: Vec<&str> = text.split('\n').collect();
+    let mut chunks = Vec::new();
+    for (index, segment) in segments.iter().enumerate() {
+        let trimmed = segment.trim();
+        if !trimmed.is_empty() {
+            let mut current = String::new();
+            for word in trimmed.split_whitespace() {
+                if !current.is_empty() {
+                    current.push(' ');
+                }
+                current.push_str(word);
+                if current.len() >= 80 {
+                    chunks.push(current.clone());
+                    current.clear();
+                }
+            }
+            if !current.is_empty() {
+                chunks.push(current);
+            }
+        }
+        if index + 1 < segments.len() {
+            chunks.push("\n".into());
+        }
+    }
+    chunks
+        .into_iter()
+        .filter(|chunk| !chunk.is_empty())
+        .collect()
 }
 
 async fn connectors_handler(State(state): State<AppState>) -> Json<Value> {
@@ -1108,6 +1302,44 @@ async fn transcript_markdown_handler(
         HeaderValue::from_static("text/markdown; charset=utf-8"),
     );
     Ok((headers, body))
+}
+
+#[derive(Debug, Deserialize)]
+struct ResolveQuery {
+    domain: String,
+}
+
+async fn resolve_handler(
+    State(state): State<AppState>,
+    Query(query): Query<ResolveQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let domain = query.domain.trim();
+    if domain.is_empty() {
+        return Err(ApiError::bad_request("domain must not be empty"));
+    }
+
+    let crypto_stack = state.crypto.clone();
+    let domain_owned = domain.to_string();
+
+    let resolution = task::spawn_blocking(move || crypto_stack.resolve_name_default(&domain_owned))
+        .await
+        .map_err(|err| {
+            error!(?err, "blocking task panicked during crypto resolution");
+            ApiError::internal("worker task failed")
+        })?
+        .map_err(|err| {
+            warn!(error = %err, domain = %domain, "crypto domain resolution failed");
+            ApiError::bad_request(format!("Failed to resolve {}: {}", domain, err))
+        })?;
+
+    let response = json!({
+        "name": resolution.name,
+        "primary_address": resolution.primary_address,
+        "records": resolution.records,
+        "service": resolution.service,
+    });
+
+    Ok(Json(response))
 }
 
 async fn tool_call_handler(

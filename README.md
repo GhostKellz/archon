@@ -2,7 +2,7 @@
 
 <div align="center">
   <img src="assets/icons/archon-final1.png" alt="Archon Concept" width="180">
-  <img src="assets/icons/archon-github.png" alt="Archon" width="180">
+  <img src="assets/icons/ArchonBrowser.png" alt="Archon" width="180">
 </div>
 
 [![Rust](https://img.shields.io/badge/Built_with-Rust-orange?style=flat-square\&logo=rust)](https://www.rust-lang.org)
@@ -51,6 +51,7 @@ Run `cargo run -- --diagnostics` to verify endpoints, API keys, the active defau
 
 
 - `archon_host` now supports both HTTP (`archon-host --listen 127.0.0.1:8805`) and Chromium native messaging (`archon-host --stdio`). The AUR package installs native messaging manifests under `/etc/chromium/native-messaging-hosts/` and `/etc/opt/chrome/native-messaging-hosts/` so the browser can spawn the host automatically.
+- The `/chat/stream` endpoint delivers Server-Sent Events (`status`, `delta`, `complete`, `error`) so the sidebar and CLI can render incremental responses while the blocking `/chat` API keeps recording transcripts.
 - A starter sidebar extension ships at `/usr/share/archon/extensions/archon-sidebar/` with a reproducible `archon-sidebar.zip` bundle alongside it. Load either artifact as an unpacked extension during development, or sign and distribute it with the embedded public key to preserve the deterministic ID (`ldcpmobkmncbffgkmjmnhlbnppkhmpii`).
 - Chromium Max build tooling is packaged under `/usr/share/archon/tools/build/`. Invoke `/usr/share/archon/tools/build/chromium_max_build.sh` directly or copy it into a writable workspace; the matching GN args template lives at `/usr/share/archon/tools/build/args/chromium_max.gn`.
 - When `ai_host.enabled` is set in `config.json`, the launcher will generate `providers.json` if missing and auto-start the `archon-host.service` user unit (with graceful fallback when systemd isn't available). Run `cargo run -- --diagnostics` to inspect the systemd state, or call `/usr/share/archon/tools/enable_archon_services.sh` to toggle the user services after packaging install.
@@ -117,7 +118,10 @@ cargo run -- --chat "transcribe this" --attach /tmp/snippet.m4a --chat-provider 
 cargo run -- --write-ghostdns-config # render GhostDNS TOML (pass --force to overwrite)
 cargo run -- --write-ai-host-config  # render AI host providers JSON (pass --force to overwrite)
 cargo run -- --sync-ghostdns-policy  # render GhostDNS + Chromium policy together (pass --force to overwrite)
+cargo run --bin archon_settings     # launch the interactive settings editor
 ```
+
+Use the new `archon-settings` binary when you want to tweak launch profiles, GPU mode, GhostDNS, IPFS gateways, AI providers, or telemetry without hand-editing JSON. Every prompt validates your input against the launcher schema before persisting, so you can experiment safely and rerun it any time to inspect the current configuration.
 
 Each entry includes phase, profile, engine/mode, execution state, PID, exit status, duration, and any error payload to streamline incident triage without leaving the terminal.
 
@@ -279,7 +283,9 @@ Default config is generated on first launch:
 * Optimized for **Linux (Arch, Fedora, Debian)** first; macOS + Windows later.
 * Native **Zig interop layer** under consideration for shader DSLs.
 
-Spin up the scaffolded harness with `cargo run -p archon-bench -- --help`; each subcommand prints placeholder telemetry until we wire in DevTools traces, decode counters, and WebGPU watchdogs. Use `--output /custom/path` to redirect result stubs if you want to keep multiple runs side-by-side.
+Spin up the benchmark harness with `cargo run -p archon-bench -- --help`; each subcommand now records real metrics and publishes JSON + HTML dashboards under `~/Archon/benchmarks`. The WebGPU watchdog supports retry logic via `--max-attempts` and writes Prometheus gauges to `~/Archon/benchmarks/webgpu/latest.prom` so Grafana can scrape GPU stability directly. Use `--output /custom/path` to redirect artifacts if you want to keep multiple runs side-by-side.
+
+For compositor + GPU coverage, kick off the automation pipeline with `tools/build/scripts/run_gpu_matrix.sh`. The script fans out `archon-bench webgpu` runs against the matrix declared at the top of the file, snapshots Prometheus textfiles into `benchmarks/gpu-matrix/`, and renders CSV/JSON summaries ready for the matching Grafana dashboard (`docs/dashboards/gpu-matrix.json`).
 
 ## 🎨 Chromium Theme Pack
 

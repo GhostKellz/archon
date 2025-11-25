@@ -8,6 +8,15 @@ use wayland_client::Connection;
 
 use which::which;
 
+/// Classification of NVIDIA driver flavour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NvidiaDriverKind {
+    Proprietary,
+    OpenKernel,
+    Nouveau,
+    Unknown,
+}
+
 /// Vendor classification for the primary GPU driving the session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GpuVendor {
@@ -63,12 +72,23 @@ impl UiShell {
     }
 
     pub fn health(&self) -> UiHealthReport {
+        self.health_with_overrides(None, None)
+    }
+
+    pub fn health_with_overrides(
+        &self,
+        prefer_wayland_override: Option<bool>,
+        allow_x11_fallback_override: Option<bool>,
+    ) -> UiHealthReport {
+        let prefer_wayland = prefer_wayland_override.unwrap_or(self.settings.prefer_wayland);
+        let allow_x11_fallback =
+            allow_x11_fallback_override.unwrap_or(self.settings.allow_x11_fallback);
         let wayland_display = env::var("WAYLAND_DISPLAY").ok();
         let session_type = env::var("XDG_SESSION_TYPE").ok();
         let mut wayland_available = false;
         let mut wayland_error = None;
 
-        if self.settings.prefer_wayland {
+        if prefer_wayland {
             match Connection::connect_to_env() {
                 Ok(_connection) => {
                     wayland_available = true;
@@ -83,13 +103,23 @@ impl UiShell {
         let gpu_vendor = Self::detect_gpu_vendor();
         let vaapi_available = Self::detect_vaapi();
         let nvdec_available = Self::detect_nvdec(gpu_vendor);
+        let nvidia_driver_kind = if matches!(gpu_vendor, GpuVendor::Nvidia) {
+            Some(Self::detect_nvidia_driver_kind())
+        } else {
+            None
+        };
         let gpu_driver_version = Self::detect_driver_version(gpu_vendor);
-        let angle_backend = Self::predict_angle_backend(compositor.as_deref(), gpu_vendor);
+        let angle_backend = Self::predict_angle_backend(
+            compositor.as_deref(),
+            gpu_vendor,
+            session_type.as_deref(),
+            nvidia_driver_kind,
+        );
         let angle_library_path = Self::detect_angle_library(angle_backend.as_deref());
 
         UiHealthReport {
-            prefer_wayland: self.settings.prefer_wayland,
-            allow_x11_fallback: self.settings.allow_x11_fallback,
+            prefer_wayland,
+            allow_x11_fallback,
             theme: self.settings.theme.clone(),
             theme_label: self.palette.label.clone(),
             accent_color: self.settings.accent_color.clone(),
@@ -101,6 +131,7 @@ impl UiShell {
             wayland_error,
             compositor,
             gpu_vendor,
+            nvidia_driver_kind,
             vaapi_available,
             nvdec_available,
             gpu_driver_version,
@@ -223,6 +254,26 @@ impl UiShell {
         }
     }
 
+    fn detect_nvidia_driver_kind() -> NvidiaDriverKind {
+        if Path::new("/sys/module/nouveau").exists() {
+            return NvidiaDriverKind::Nouveau;
+        }
+
+        if Path::new("/sys/module/nvidia").exists()
+            || Path::new("/sys/module/nvidia_drm").exists()
+            || Path::new("/proc/driver/nvidia/version").exists()
+        {
+            if let Some(line) = Self::read_first_line("/proc/driver/nvidia/version") {
+                if line.to_ascii_lowercase().contains("open kernel module") {
+                    return NvidiaDriverKind::OpenKernel;
+                }
+            }
+            return NvidiaDriverKind::Proprietary;
+        }
+
+        NvidiaDriverKind::Unknown
+    }
+
     fn read_first_line(path: &str) -> Option<String> {
         fs::read_to_string(path)
             .ok()
@@ -244,16 +295,56 @@ impl UiShell {
             .map(|token| token.trim_matches(',').to_string())
     }
 
-    fn predict_angle_backend(compositor: Option<&str>, vendor: GpuVendor) -> Option<String> {
+    fn predict_angle_backend(
+        compositor: Option<&str>,
+        vendor: GpuVendor,
+        session_type: Option<&str>,
+        nvidia_driver_kind: Option<NvidiaDriverKind>,
+    ) -> Option<String> {
         if matches!(vendor, GpuVendor::Nvidia) {
-            return Some("vulkan".into());
+            let session_is_wayland = session_type
+                .map(|value| value.eq_ignore_ascii_case("wayland"))
+                .unwrap_or(false);
+            let compositor_prefers_wayland = compositor
+                .map(|value| Self::compositor_prefers_wayland(value))
+                .unwrap_or(false);
+
+            if session_is_wayland
+                || compositor_prefers_wayland
+                || matches!(nvidia_driver_kind, Some(NvidiaDriverKind::OpenKernel))
+            {
+                return Some("vulkan".into());
+            }
+
+            return Some("gl".into());
         }
+
         if let Some(name) = compositor {
             if name.eq_ignore_ascii_case("hyprland") {
                 return Some("vulkan".into());
             }
         }
+
         None
+    }
+
+    fn compositor_prefers_wayland(name: &str) -> bool {
+        let lowered = name.to_ascii_lowercase();
+        matches!(
+            lowered.as_str(),
+            "gnome"
+                | "gnome-shell"
+                | "plasma"
+                | "kde plasma"
+                | "kde"
+                | "sway"
+                | "hyprland"
+                | "weston"
+                | "wayfire"
+                | "river"
+                | "cosmic"
+                | "deepin"
+        )
     }
 
     fn detect_angle_library(backend: Option<&str>) -> Option<PathBuf> {
@@ -337,6 +428,7 @@ pub struct UiHealthReport {
     pub wayland_error: Option<String>,
     pub compositor: Option<String>,
     pub gpu_vendor: GpuVendor,
+    pub nvidia_driver_kind: Option<NvidiaDriverKind>,
     pub vaapi_available: bool,
     pub nvdec_available: bool,
     pub gpu_driver_version: Option<String>,
@@ -361,5 +453,16 @@ mod tests {
         assert!(report.gpu_driver_version.is_none());
         assert!(report.angle_backend.is_none());
         assert!(report.angle_library_path.is_none());
+    }
+
+    #[test]
+    fn health_override_can_disable_wayland() {
+        let mut settings = UiSettings::default();
+        settings.prefer_wayland = true;
+        let palette = crate::theme::ThemeRegistry::default_palette();
+        let shell = UiShell::new(settings, palette);
+        let report = shell.health_with_overrides(Some(false), None);
+        assert!(!report.prefer_wayland);
+        assert!(!report.wayland_available);
     }
 }

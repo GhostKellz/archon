@@ -1,8 +1,13 @@
 use std::{
+    collections::HashMap,
+    convert::TryFrom,
+    fmt,
     fs::File,
+    future::Future,
     io::{self, BufReader},
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     path::Path,
+    pin::Pin,
     sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -11,20 +16,23 @@ use anyhow::{Context, Result, anyhow};
 use axum::{
     Router,
     body::{Body, Bytes},
-    extract::{Path as AxumPath, RawQuery, State},
+    extract::{Path as AxumPath, Query, RawQuery, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use futures_util::{TryStreamExt, future::try_join_all};
 use hickory_proto::op::{Edns, Message, MessageType, ResponseCode};
 use hickory_proto::rr::rdata::{TXT, opt::EdnsCode};
 use hickory_proto::rr::{RData, Record, RecordType};
-use prometheus::{Encoder, IntCounter, Opts, Registry, TextEncoder};
+use prometheus::{Encoder, IntCounter, IntGauge, Opts, Registry, TextEncoder};
+use quinn::{Endpoint, ServerConfig as QuinnServerConfig, TransportConfig};
 use reqwest::Client;
 use rusqlite::{Connection, OptionalExtension, params};
 use rustls_pemfile::{certs, pkcs8_private_keys, rsa_private_keys};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use serde::Deserialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -32,17 +40,28 @@ use tokio::{
     sync::Mutex,
     task,
 };
-use tokio_rustls::TlsAcceptor;
-use tokio_rustls::rustls::{Certificate, PrivateKey, ServerConfig};
+use tokio_rustls::rustls::{
+    Certificate, ClientConfig, OwnedTrustAnchor, PrivateKey, RootCertStore,
+    ServerConfig as RustlsServerConfig, ServerName,
+};
+use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tracing::{error, info, warn};
 
 use crate::crypto::{CryptoStack, DomainResolution};
 use crate::ghostdns::{
-    DEFAULT_UPSTREAM_PROFILE, default_upstream_provider, resolve_upstream_profile,
+    DEFAULT_UPSTREAM_PROFILE, UPSTREAM_PROVIDERS, default_upstream_provider,
+    resolve_upstream_profile,
 };
+use url::Url;
+use webpki_roots::TLS_SERVER_ROOTS;
 
 const DNS_CONTENT_TYPE: &str = "application/dns-message";
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+const IPFS_CACHE_CONTROL: &str = "public, max-age=300, immutable";
+const IPFS_GATEWAY_USER_AGENT: &str = "ArchonGhostDNS/0.1 (ipfs-gateway)";
+const HEADER_X_IPFS_NAMESPACE: &str = "x-ipfs-namespace";
+const HEADER_X_IPFS_PATH: &str = "x-ipfs-path";
+const HEADER_X_CONTENT_TYPE_OPTIONS: &str = "x-content-type-options";
 
 struct GhostDnsMetrics {
     registry: Registry,
@@ -51,10 +70,14 @@ struct GhostDnsMetrics {
     doh_upstream_responses_total: IntCounter,
     doh_upstream_failures_total: IntCounter,
     doh_internal_errors_total: IntCounter,
+    doh_failover_attempts_total: IntCounter,
+    dot_failover_attempts_total: IntCounter,
     cache_hits_total: IntCounter,
     cache_misses_total: IntCounter,
     dnssec_fail_open_total: IntCounter,
     ecs_stripped_total: IntCounter,
+    doh_active_index: IntGauge,
+    dot_active_index: IntGauge,
 }
 
 impl GhostDnsMetrics {
@@ -64,6 +87,10 @@ impl GhostDnsMetrics {
         let counter = |name: &str, help: &str| -> Result<IntCounter, prometheus::Error> {
             let opts = Opts::new(name, help);
             IntCounter::with_opts(opts)
+        };
+        let gauge = |name: &str, help: &str| -> Result<IntGauge, prometheus::Error> {
+            let opts = Opts::new(name, help);
+            IntGauge::with_opts(opts)
         };
 
         let doh_requests_total = counter(
@@ -94,6 +121,14 @@ impl GhostDnsMetrics {
             "ghostdns_cache_misses_total",
             "Number of GhostDNS cache lookups that missed",
         )?;
+        let doh_failover_attempts_total = counter(
+            "ghostdns_doh_failover_attempts_total",
+            "Number of DoH failover attempts performed",
+        )?;
+        let dot_failover_attempts_total = counter(
+            "ghostdns_dot_failover_attempts_total",
+            "Number of DoT failover attempts performed",
+        )?;
         let dnssec_fail_open_total = counter(
             "ghostdns_dnssec_fail_open_total",
             "Number of upstream responses allowed despite DNSSEC validation failures",
@@ -102,16 +137,31 @@ impl GhostDnsMetrics {
             "ghostdns_ecs_stripped_total",
             "Number of EDNS Client Subnet options stripped from queries",
         )?;
+        let doh_active_index = gauge(
+            "ghostdns_doh_active_endpoint_index",
+            "Index of the currently active DoH upstream (0 = primary)",
+        )?;
+        let dot_active_index = gauge(
+            "ghostdns_dot_active_endpoint_index",
+            "Index of the currently active DoT upstream (0 = primary, when enabled)",
+        )?;
 
         registry.register(Box::new(doh_requests_total.clone()))?;
         registry.register(Box::new(doh_local_responses_total.clone()))?;
         registry.register(Box::new(doh_upstream_responses_total.clone()))?;
         registry.register(Box::new(doh_upstream_failures_total.clone()))?;
         registry.register(Box::new(doh_internal_errors_total.clone()))?;
+        registry.register(Box::new(doh_failover_attempts_total.clone()))?;
+        registry.register(Box::new(dot_failover_attempts_total.clone()))?;
         registry.register(Box::new(cache_hits_total.clone()))?;
         registry.register(Box::new(cache_misses_total.clone()))?;
         registry.register(Box::new(dnssec_fail_open_total.clone()))?;
         registry.register(Box::new(ecs_stripped_total.clone()))?;
+        registry.register(Box::new(doh_active_index.clone()))?;
+        registry.register(Box::new(dot_active_index.clone()))?;
+
+        doh_active_index.set(0);
+        dot_active_index.set(0);
 
         Ok(Self {
             registry,
@@ -120,10 +170,14 @@ impl GhostDnsMetrics {
             doh_upstream_responses_total,
             doh_upstream_failures_total,
             doh_internal_errors_total,
+            doh_failover_attempts_total,
+            dot_failover_attempts_total,
             cache_hits_total,
             cache_misses_total,
             dnssec_fail_open_total,
             ecs_stripped_total,
+            doh_active_index,
+            dot_active_index,
         })
     }
 
@@ -161,6 +215,22 @@ impl GhostDnsMetrics {
 
     fn inc_ecs_stripped(&self) {
         self.ecs_stripped_total.inc();
+    }
+
+    fn inc_doh_failover_attempt(&self) {
+        self.doh_failover_attempts_total.inc();
+    }
+
+    fn inc_dot_failover_attempt(&self) {
+        self.dot_failover_attempts_total.inc();
+    }
+
+    fn set_doh_active_index(&self, index: usize) {
+        self.doh_active_index.set(index as i64);
+    }
+
+    fn set_dot_active_index(&self, index: usize) {
+        self.dot_active_index.set(index as i64);
     }
 
     fn render(&self) -> Result<Vec<u8>, prometheus::Error> {
@@ -208,6 +278,7 @@ struct DnsCache {
     conn: Arc<Mutex<Connection>>,
     positive_ttl: Option<Duration>,
     negative_ttl: Option<Duration>,
+    max_entries: Option<usize>,
 }
 
 impl DnsCache {
@@ -227,6 +298,11 @@ impl DnsCache {
         };
         let negative_ttl = if config.negative_ttl_seconds > 0 {
             Some(Duration::from_secs(config.negative_ttl_seconds))
+        } else {
+            None
+        };
+        let max_entries = if config.max_entries > 0 {
+            Some(config.max_entries as usize)
         } else {
             None
         };
@@ -270,6 +346,7 @@ impl DnsCache {
             conn: Arc::new(Mutex::new(connection)),
             positive_ttl,
             negative_ttl,
+            max_entries,
         });
 
         info!(path = %path, "Initialised GhostDNS response cache");
@@ -326,6 +403,7 @@ impl DnsCache {
         let expires_at = current_epoch() + ttl.as_secs() as i64;
         let storage_key = key.storage_key();
         let conn = self.conn.clone();
+        let max_entries = self.max_entries;
         task::spawn_blocking(move || -> Result<()> {
             let conn = conn.blocking_lock();
             conn.execute(
@@ -336,6 +414,22 @@ impl DnsCache {
                     response = excluded.response",
                 params![storage_key, expires_at, payload],
             )?;
+            if let Some(limit) = max_entries {
+                let count: i64 = conn
+                    .query_row("SELECT COUNT(*) FROM dns_cache", [], |row| row.get(0))
+                    .unwrap_or(0);
+                if count > limit as i64 {
+                    let surplus = count - limit as i64;
+                    conn.execute(
+                        "DELETE FROM dns_cache WHERE cache_key IN (
+                            SELECT cache_key FROM dns_cache
+                            ORDER BY expires_at ASC
+                            LIMIT ?1
+                        )",
+                        params![surplus],
+                    )?;
+                }
+            }
             Ok(())
         })
         .await
@@ -377,7 +471,15 @@ pub struct ServerSection {
     #[serde(default)]
     pub dot_key_path: Option<String>,
     #[serde(default)]
+    pub doq_listen: Option<String>,
+    #[serde(default)]
+    pub doq_cert_path: Option<String>,
+    #[serde(default)]
+    pub doq_key_path: Option<String>,
+    #[serde(default)]
     pub metrics_listen: Option<String>,
+    #[serde(default = "default_ipfs_gateway_listen")]
+    pub ipfs_gateway_listen: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -388,6 +490,8 @@ pub struct CacheSection {
     pub ttl_seconds: u64,
     #[serde(default = "default_negative_ttl")]
     pub negative_ttl_seconds: u64,
+    #[serde(default = "default_cache_max_entries")]
+    pub max_entries: u64,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -400,6 +504,8 @@ pub struct ResolversSection {
     pub unstoppable_api_key_env: Option<String>,
     #[serde(default)]
     pub ipfs_gateway: Option<String>,
+    #[serde(default = "default_ipfs_api_endpoint")]
+    pub ipfs_api: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -427,16 +533,51 @@ struct ResolvedUpstream {
     profile: Option<String>,
     doh_endpoint: String,
     dot_endpoint: String,
+    failover_doh: Vec<String>,
+    failover_dot: Vec<String>,
+}
+
+fn push_unique(target: &mut Vec<String>, candidate: &str) {
+    let trimmed = candidate.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if !target.iter().any(|existing| existing == trimmed) {
+        target.push(trimmed.to_string());
+    }
 }
 
 impl ResolvedUpstream {
     fn from_section(section: &UpstreamSection) -> Self {
+        let mut failover_doh = Vec::new();
+        let mut failover_dot = Vec::new();
+
         if let Some(name) = section.profile.as_deref() {
             if let Some(provider) = resolve_upstream_profile(name) {
+                let doh_endpoint = provider.doh_endpoint.to_string();
+                let dot_endpoint = provider.dot_endpoint.to_string();
+
+                if !section.fallback_doh.trim().is_empty() && section.fallback_doh != doh_endpoint {
+                    push_unique(&mut failover_doh, &section.fallback_doh);
+                }
+                if !section.fallback_dot.trim().is_empty() && section.fallback_dot != dot_endpoint {
+                    push_unique(&mut failover_dot, &section.fallback_dot);
+                }
+
+                for candidate in UPSTREAM_PROVIDERS {
+                    if candidate.name == provider.name {
+                        continue;
+                    }
+                    push_unique(&mut failover_doh, candidate.doh_endpoint);
+                    push_unique(&mut failover_dot, candidate.dot_endpoint);
+                }
+
                 return Self {
                     profile: Some(provider.name.to_string()),
-                    doh_endpoint: provider.doh_endpoint.into(),
-                    dot_endpoint: provider.dot_endpoint.into(),
+                    doh_endpoint,
+                    dot_endpoint,
+                    failover_doh,
+                    failover_dot,
                 };
             } else if !name.trim().is_empty() {
                 warn!(
@@ -458,10 +599,21 @@ impl ResolvedUpstream {
             section.fallback_dot.clone()
         };
 
+        for candidate in UPSTREAM_PROVIDERS {
+            if candidate.doh_endpoint != doh_endpoint {
+                push_unique(&mut failover_doh, candidate.doh_endpoint);
+            }
+            if candidate.dot_endpoint != dot_endpoint {
+                push_unique(&mut failover_dot, candidate.dot_endpoint);
+            }
+        }
+
         Self {
             profile: section.profile.clone(),
             doh_endpoint,
             dot_endpoint,
+            failover_doh,
+            failover_dot,
         }
     }
 }
@@ -478,6 +630,10 @@ fn default_negative_ttl() -> u64 {
     300
 }
 
+fn default_cache_max_entries() -> u64 {
+    4096
+}
+
 fn default_upstream_profile_option() -> Option<String> {
     Some(DEFAULT_UPSTREAM_PROFILE.into())
 }
@@ -490,6 +646,275 @@ fn default_fallback_dot() -> String {
     default_upstream_provider().dot_endpoint.into()
 }
 
+fn default_ipfs_gateway_listen() -> Option<String> {
+    Some("127.0.0.1:8080".into())
+}
+
+fn default_ipfs_api_endpoint() -> Option<String> {
+    Some("http://127.0.0.1:5001/api/v0".into())
+}
+
+#[derive(Clone, Copy, Debug)]
+enum IpfsNamespace {
+    Ipfs,
+    Ipns,
+}
+
+impl IpfsNamespace {
+    fn as_str(&self) -> &'static str {
+        match self {
+            IpfsNamespace::Ipfs => "ipfs",
+            IpfsNamespace::Ipns => "ipns",
+        }
+    }
+}
+
+#[derive(Clone)]
+struct IpfsGateway {
+    client: Client,
+    cat_url: Url,
+}
+
+impl IpfsGateway {
+    fn new(api_endpoint: &str) -> Result<Self> {
+        let mut cat_url = Url::parse(api_endpoint)
+            .with_context(|| format!("Invalid IPFS API endpoint: {api_endpoint}"))?;
+        {
+            let mut segments = cat_url
+                .path_segments_mut()
+                .map_err(|_| anyhow!("IPFS API endpoint must be absolute: {api_endpoint}"))?;
+            segments.push("cat");
+        }
+        let client = Client::builder()
+            .user_agent(IPFS_GATEWAY_USER_AGENT)
+            .timeout(Duration::from_secs(60))
+            .build()
+            .context("Failed to build IPFS gateway client")?;
+        Ok(Self { client, cat_url })
+    }
+
+    async fn fetch(
+        &self,
+        namespace: IpfsNamespace,
+        tail: String,
+        params: HashMap<String, String>,
+    ) -> Result<Response, IpfsGatewayError> {
+        let normalised = normalise_ipfs_path(tail)?;
+        let ipfs_path = format!("/{}/{}", namespace.as_str(), normalised);
+
+        let mut query: Vec<(String, String)> = Vec::with_capacity(params.len() + 1);
+        let mut filename = None;
+        for (key, value) in params {
+            if key.eq_ignore_ascii_case("arg") {
+                continue;
+            }
+            if key.eq_ignore_ascii_case("filename") {
+                if let Some(clean) = sanitise_filename(&value) {
+                    filename = Some(clean);
+                }
+                continue;
+            }
+            query.push((key, value));
+        }
+        query.push(("arg".to_string(), ipfs_path.clone()));
+
+        let response = self
+            .client
+            .post(self.cat_url.clone())
+            .query(&query)
+            .send()
+            .await
+            .map_err(IpfsGatewayError::from_reqwest)?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            if status == StatusCode::NOT_FOUND || body.to_ascii_lowercase().contains("not found") {
+                return Err(IpfsGatewayError::NotFound {
+                    reason: if body.is_empty() { None } else { Some(body) },
+                });
+            }
+
+            let message = if body.is_empty() {
+                format!("IPFS API returned status {}", status.as_u16())
+            } else {
+                format!("status {}: {}", status.as_u16(), body)
+            };
+
+            if status.is_server_error() {
+                return Err(IpfsGatewayError::UpstreamUnavailable(message));
+            }
+
+            return Err(IpfsGatewayError::UpstreamFailure(message));
+        }
+
+        let headers = response.headers().clone();
+        let stream = response
+            .bytes_stream()
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))
+            .map_ok(|chunk| chunk);
+        let body = Body::from_stream(stream);
+
+        let mut reply = Response::new(body);
+        *reply.status_mut() = StatusCode::OK;
+
+        let content_type = headers
+            .get(header::CONTENT_TYPE)
+            .cloned()
+            .unwrap_or_else(|| HeaderValue::from_static("application/octet-stream"));
+        reply
+            .headers_mut()
+            .insert(header::CONTENT_TYPE, content_type);
+        reply.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static(IPFS_CACHE_CONTROL),
+        );
+        reply.headers_mut().insert(
+            header::HeaderName::from_static(HEADER_X_IPFS_NAMESPACE),
+            HeaderValue::from_static(namespace.as_str()),
+        );
+        if let Ok(value) = HeaderValue::from_str(&ipfs_path) {
+            reply
+                .headers_mut()
+                .insert(header::HeaderName::from_static(HEADER_X_IPFS_PATH), value);
+        }
+        reply.headers_mut().insert(
+            header::HeaderName::from_static(HEADER_X_CONTENT_TYPE_OPTIONS),
+            HeaderValue::from_static("nosniff"),
+        );
+        if let Some(name) = filename {
+            if let Ok(value) = HeaderValue::from_str(&format!("inline; filename=\"{}\"", name)) {
+                reply
+                    .headers_mut()
+                    .insert(header::CONTENT_DISPOSITION, value);
+            }
+        }
+
+        Ok(reply)
+    }
+}
+
+#[derive(Debug)]
+enum IpfsGatewayError {
+    BadRequest(String),
+    NotFound { reason: Option<String> },
+    UpstreamUnavailable(String),
+    UpstreamFailure(String),
+}
+
+impl IpfsGatewayError {
+    fn from_reqwest(err: reqwest::Error) -> Self {
+        if err.is_timeout() {
+            Self::UpstreamUnavailable("IPFS API request timed out".into())
+        } else if err.is_connect() {
+            Self::UpstreamUnavailable(err.to_string())
+        } else {
+            Self::UpstreamFailure(err.to_string())
+        }
+    }
+}
+
+impl fmt::Display for IpfsGatewayError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            IpfsGatewayError::BadRequest(msg) => write!(f, "{msg}"),
+            IpfsGatewayError::NotFound { reason } => {
+                if let Some(reason) = reason {
+                    write!(f, "ipfs content not found: {reason}")
+                } else {
+                    write!(f, "ipfs content not found")
+                }
+            }
+            IpfsGatewayError::UpstreamUnavailable(msg) => {
+                write!(f, "ipfs api unavailable: {msg}")
+            }
+            IpfsGatewayError::UpstreamFailure(msg) => {
+                write!(f, "ipfs api failure: {msg}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for IpfsGatewayError {}
+
+impl IntoResponse for IpfsGatewayError {
+    fn into_response(self) -> Response {
+        let (status, body) = match self {
+            IpfsGatewayError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg),
+            IpfsGatewayError::NotFound { .. } => {
+                (StatusCode::NOT_FOUND, "IPFS content not found".to_string())
+            }
+            IpfsGatewayError::UpstreamUnavailable(_) => (
+                StatusCode::BAD_GATEWAY,
+                "IPFS backend unavailable".to_string(),
+            ),
+            IpfsGatewayError::UpstreamFailure(_) => {
+                (StatusCode::BAD_GATEWAY, "IPFS backend failure".to_string())
+            }
+        };
+
+        (status, body).into_response()
+    }
+}
+
+fn normalise_ipfs_path(tail: String) -> Result<String, IpfsGatewayError> {
+    let trimmed = tail.trim();
+    if trimmed.is_empty() {
+        return Err(IpfsGatewayError::BadRequest(
+            "missing content identifier".into(),
+        ));
+    }
+    if trimmed.len() > 2048 {
+        return Err(IpfsGatewayError::BadRequest(
+            "content identifier too long".into(),
+        ));
+    }
+    let mut segments = Vec::new();
+    for segment in trimmed.split('/') {
+        if segment.is_empty() {
+            continue;
+        }
+        if segment == "." || segment == ".." {
+            return Err(IpfsGatewayError::BadRequest(
+                "path segment contains traversal".into(),
+            ));
+        }
+        segments.push(segment);
+    }
+    if segments.is_empty() {
+        return Err(IpfsGatewayError::BadRequest(
+            "missing content identifier".into(),
+        ));
+    }
+    Ok(segments.join("/"))
+}
+
+fn sanitise_filename(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut output = String::with_capacity(trimmed.len());
+    for ch in trimmed.chars() {
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | ' ' | '(' | ')' | '[' | ']')
+        {
+            output.push(ch);
+        } else if ch == '/' || ch == '\\' {
+            output.push('_');
+        }
+    }
+    let cleaned = output.trim_matches(' ').to_string();
+    if cleaned.is_empty() {
+        None
+    } else {
+        let mut truncated = cleaned;
+        if truncated.len() > 100 {
+            truncated.truncate(100);
+        }
+        Some(truncated)
+    }
+}
+
 /// Domain-specific middleware powering DoH responses.
 #[derive(Clone)]
 pub struct GhostDnsDaemon {
@@ -500,7 +925,7 @@ pub struct GhostDnsDaemon {
 }
 
 impl GhostDnsDaemon {
-    pub fn new(config: GhostDnsRuntimeConfig, crypto: CryptoStack) -> Result<Self> {
+    pub fn new(mut config: GhostDnsRuntimeConfig, crypto: CryptoStack) -> Result<Self> {
         let client = Client::builder()
             .user_agent("ArchonGhostDNS/0.1")
             .timeout(std::time::Duration::from_secs(5))
@@ -509,12 +934,98 @@ impl GhostDnsDaemon {
 
         let metrics = GhostDnsMetrics::new().context("Failed to initialise GhostDNS metrics")?;
 
+        let mut crypto = crypto;
+        let gateway = Self::apply_resolver_overrides(&mut config, &mut crypto);
+
+        if let Some(ref gateway) = gateway {
+            info!(gateway = %gateway, "GhostDNS ENS contenthash gateway enabled");
+        } else {
+            info!(
+                "GhostDNS ENS contenthash gateway disabled; ENS contenthash responses will expose canonical URIs only"
+            );
+        }
+
+        let config = Arc::new(config);
+
         Ok(Self {
-            config: Arc::new(config),
+            config,
             crypto: Arc::new(crypto),
             client,
             metrics: Arc::new(metrics),
         })
+    }
+
+    fn apply_resolver_overrides(
+        config: &mut GhostDnsRuntimeConfig,
+        crypto: &mut CryptoStack,
+    ) -> Option<String> {
+        let has_ens_override = config.resolvers.ens_endpoint.is_some();
+        let ens_override = Self::trimmed_option(config.resolvers.ens_endpoint.as_ref());
+
+        let has_unstoppable_override = config.resolvers.unstoppable_endpoint.is_some();
+        let unstoppable_override =
+            Self::trimmed_option(config.resolvers.unstoppable_endpoint.as_ref());
+
+        let has_api_key_override = config.resolvers.unstoppable_api_key_env.is_some();
+        let api_key_env = Self::trimmed_option(config.resolvers.unstoppable_api_key_env.as_ref());
+
+        let has_ipfs_api_override = config.resolvers.ipfs_api.is_some();
+        let ipfs_api_override = Self::trimmed_option(config.resolvers.ipfs_api.as_ref());
+
+        let mut gateway = Self::trimmed_option(config.resolvers.ipfs_gateway.as_ref());
+        if gateway.is_none() {
+            gateway = Self::derive_gateway_from_server(&config.server);
+        }
+        let settings = crypto.resolver_settings_mut();
+
+        if let Some(ens) = &ens_override {
+            settings.ens_endpoint = ens.clone();
+        }
+        if let Some(unstoppable) = &unstoppable_override {
+            settings.ud_endpoint = unstoppable.clone();
+        }
+        if has_api_key_override {
+            settings.ud_api_key_env = api_key_env.clone();
+        }
+        if has_ipfs_api_override {
+            settings.ipfs_api = ipfs_api_override.clone();
+        }
+        settings.ipfs_gateway = gateway.clone();
+
+        if has_ens_override {
+            config.resolvers.ens_endpoint = ens_override;
+        }
+        if has_unstoppable_override {
+            config.resolvers.unstoppable_endpoint = unstoppable_override;
+        }
+        if has_api_key_override {
+            config.resolvers.unstoppable_api_key_env = api_key_env;
+        }
+        if has_ipfs_api_override {
+            config.resolvers.ipfs_api = ipfs_api_override;
+        }
+        config.resolvers.ipfs_gateway = gateway.clone();
+        gateway
+    }
+
+    fn trimmed_option(value: Option<&String>) -> Option<String> {
+        value.and_then(|raw| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+    }
+
+    fn derive_gateway_from_server(server: &ServerSection) -> Option<String> {
+        let listen = Self::trimmed_option(server.ipfs_gateway_listen.as_ref())?;
+        if listen.contains("://") {
+            Some(listen)
+        } else {
+            Some(format!("http://{}", listen))
+        }
     }
 
     pub async fn run(self) -> Result<()> {
@@ -533,15 +1044,25 @@ impl GhostDnsDaemon {
                 profile = %profile,
                 doh = %resolved_upstream.doh_endpoint,
                 dot = %resolved_upstream.dot_endpoint,
+                doh_failovers = resolved_upstream.failover_doh.len(),
+                dot_failovers = resolved_upstream.failover_dot.len(),
                 "Using configured GhostDNS upstream profile"
             );
         } else {
             info!(
                 doh = %resolved_upstream.doh_endpoint,
                 dot = %resolved_upstream.dot_endpoint,
+                doh_failovers = resolved_upstream.failover_doh.len(),
+                dot_failovers = resolved_upstream.failover_dot.len(),
                 "Using custom GhostDNS upstream endpoints"
             );
         }
+        self.metrics.set_doh_active_index(0);
+        self.metrics.set_dot_active_index(0);
+        let upstream_runtime = Arc::new(Mutex::new(UpstreamRuntimeState::new(
+            &resolved_upstream.doh_endpoint,
+            &resolved_upstream.dot_endpoint,
+        )));
         let state = Arc::new(DohState {
             config: self.config.clone(),
             crypto: self.crypto.clone(),
@@ -550,6 +1071,7 @@ impl GhostDnsDaemon {
             metrics: self.metrics.clone(),
             cache,
             resolved_upstream,
+            upstream_state: upstream_runtime,
         });
 
         let router = Router::new()
@@ -588,41 +1110,119 @@ impl GhostDnsDaemon {
             None
         };
 
-        if let Some(metrics_addr) = metrics_addr {
-            if let Some((dot_addr, tls_config)) = dot_runtime {
-                tokio::try_join!(
-                    async {
-                        doh_server
-                            .await
-                            .context("GhostDNS DoH server terminated unexpectedly")
-                    },
-                    async { run_metrics_server(&metrics_addr, self.metrics.clone()).await },
-                    async { run_dot_server(&dot_addr, tls_config, state.clone()).await },
-                )?;
+        let doq_runtime = if let Some(doq_addr) = &self.config.server.doq_listen {
+            if doq_addr.trim().is_empty() {
+                None
             } else {
-                tokio::try_join!(
-                    async {
-                        doh_server
-                            .await
-                            .context("GhostDNS DoH server terminated unexpectedly")
-                    },
-                    async { run_metrics_server(&metrics_addr, self.metrics.clone()).await },
-                )?;
+                let cert_path = self.config.server.doq_cert_path.as_ref().or(self
+                    .config
+                    .server
+                    .dot_cert_path
+                    .as_ref());
+                let key_path = self.config.server.doq_key_path.as_ref().or(self
+                    .config
+                    .server
+                    .dot_key_path
+                    .as_ref());
+
+                match (cert_path, key_path) {
+                    (Some(cert_path), Some(key_path)) => {
+                        match load_doq_server_config(cert_path, key_path) {
+                            Ok(cfg) => Some((doq_addr.clone(), cfg)),
+                            Err(err) => {
+                                error!(listener = %doq_addr, error = %err, "Failed to initialise DoQ TLS config; skipping DoQ listener");
+                                None
+                            }
+                        }
+                    }
+                    _ => {
+                        warn!(listener = %doq_addr, "DoQ listener configured but TLS certificate or key path missing; skipping DoQ listener");
+                        None
+                    }
+                }
             }
-        } else if let Some((dot_addr, tls_config)) = dot_runtime {
-            tokio::try_join!(
-                async {
-                    doh_server
-                        .await
-                        .context("GhostDNS DoH server terminated unexpectedly")
-                },
-                async { run_dot_server(&dot_addr, tls_config, state.clone()).await },
-            )?;
         } else {
+            None
+        };
+
+        let ipfs_runtime = if let Some(listen) = self
+            .config
+            .server
+            .ipfs_gateway_listen
+            .as_ref()
+            .and_then(|addr| {
+                let trimmed = addr.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }) {
+            if let Some(api_endpoint) = self.config.resolvers.ipfs_api.as_ref().and_then(|raw| {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }) {
+                match IpfsGateway::new(&api_endpoint) {
+                    Ok(gateway) => Some((listen, Arc::new(gateway))),
+                    Err(err) => {
+                        warn!(
+                            error = %err,
+                            api = %api_endpoint,
+                            "Failed to initialise IPFS gateway; skipping HTTP gateway"
+                        );
+                        None
+                    }
+                }
+            } else {
+                warn!(
+                    listener = %listen,
+                    "IPFS gateway listener configured but IPFS API endpoint missing; skipping HTTP gateway"
+                );
+                None
+            }
+        } else {
+            None
+        };
+
+        let mut tasks: Vec<Pin<Box<dyn Future<Output = Result<()>> + Send>>> = Vec::new();
+        tasks.push(Box::pin(async move {
             doh_server
                 .await
-                .context("GhostDNS DoH server terminated unexpectedly")?;
+                .context("GhostDNS DoH server terminated unexpectedly")
+        }));
+
+        if let Some(metrics_addr) = metrics_addr {
+            let metrics = self.metrics.clone();
+            tasks.push(Box::pin(async move {
+                run_metrics_server(&metrics_addr, metrics).await
+            }));
         }
+
+        if let Some((dot_addr, tls_config)) = dot_runtime {
+            let state = state.clone();
+            tasks.push(Box::pin(async move {
+                run_dot_server(&dot_addr, tls_config, state).await
+            }));
+        }
+
+        if let Some((doq_addr, server_config)) = doq_runtime {
+            let state = state.clone();
+            tasks.push(Box::pin(async move {
+                run_doq_server(&doq_addr, server_config, state).await
+            }));
+        }
+
+        if let Some((gateway_addr, gateway)) = ipfs_runtime {
+            tasks.push(Box::pin(async move {
+                run_ipfs_gateway(&gateway_addr, gateway).await
+            }));
+        }
+
+        try_join_all(tasks).await?;
 
         Ok(())
     }
@@ -636,6 +1236,38 @@ impl GhostDnsDaemon {
     }
 }
 
+#[derive(Debug, Default)]
+struct UpstreamRuntimeState {
+    doh_active_endpoint: String,
+    dot_active_endpoint: String,
+    doh_failover_events: u64,
+    dot_failover_events: u64,
+}
+
+impl UpstreamRuntimeState {
+    fn new(doh_endpoint: &str, dot_endpoint: &str) -> Self {
+        Self {
+            doh_active_endpoint: doh_endpoint.to_string(),
+            dot_active_endpoint: dot_endpoint.to_string(),
+            ..Default::default()
+        }
+    }
+
+    fn record_doh_success(&mut self, endpoint: &str, index: usize) {
+        self.doh_active_endpoint = endpoint.to_string();
+        if index > 0 {
+            self.doh_failover_events += 1;
+        }
+    }
+
+    fn record_dot_success(&mut self, endpoint: &str, index: usize, triggered_by_doh_failure: bool) {
+        self.dot_active_endpoint = endpoint.to_string();
+        if triggered_by_doh_failure || index > 0 {
+            self.dot_failover_events += 1;
+        }
+    }
+}
+
 #[derive(Clone)]
 struct DohState {
     config: Arc<GhostDnsRuntimeConfig>,
@@ -645,6 +1277,7 @@ struct DohState {
     metrics: Arc<GhostDnsMetrics>,
     cache: Option<Arc<DnsCache>>,
     resolved_upstream: ResolvedUpstream,
+    upstream_state: Arc<Mutex<UpstreamRuntimeState>>,
 }
 
 async fn shutdown_signal() {
@@ -671,6 +1304,199 @@ async fn run_metrics_server(addr: &str, metrics: Arc<GhostDnsMetrics>) -> Result
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("GhostDNS metrics server terminated unexpectedly")
+}
+
+async fn run_doq_server(
+    addr: &str,
+    server_config: QuinnServerConfig,
+    state: Arc<DohState>,
+) -> Result<()> {
+    let socket_addr: SocketAddr = addr
+        .parse()
+        .with_context(|| format!("Invalid DoQ listener address: {addr}"))?;
+
+    let endpoint = Endpoint::server(server_config, socket_addr)
+        .with_context(|| format!("Failed to bind DoQ listener at {socket_addr}"))?;
+
+    info!(listener = %socket_addr, "Starting GhostDNS DoQ server");
+
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => {
+                info!("Shutdown signal received; stopping GhostDNS DoQ server");
+                break;
+            }
+            incoming_conn = endpoint.accept() => {
+                match incoming_conn {
+                    Some(connecting) => {
+                        let state = state.clone();
+                        tokio::spawn(async move {
+                            match connecting.await {
+                                Ok(connection) => {
+                                    if let Err(err) = handle_doq_connection(connection, state).await {
+                                        warn!(error = %err, "DoQ connection terminated with error");
+                                    }
+                                }
+                                Err(err) => {
+                                    warn!(error = %err, "Failed to establish DoQ connection");
+                                }
+                            }
+                        });
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+
+    endpoint.close(0u32.into(), b"shutdown");
+    endpoint.wait_idle().await;
+
+    Ok(())
+}
+
+async fn run_ipfs_gateway(addr: &str, gateway: Arc<IpfsGateway>) -> Result<()> {
+    let socket_addr: SocketAddr = addr
+        .parse()
+        .with_context(|| format!("Invalid IPFS gateway listener address: {addr}"))?;
+
+    let listener = TcpListener::bind(socket_addr)
+        .await
+        .with_context(|| format!("Failed to bind IPFS gateway listener at {socket_addr}"))?;
+
+    info!(listener = %socket_addr, "Starting GhostDNS IPFS gateway server");
+
+    let app = Router::new()
+        .route("/", get(ipfs_gateway_root))
+        .route("/ipfs/*path", get(ipfs_gateway_ipfs))
+        .route("/ipns/*path", get(ipfs_gateway_ipns))
+        .with_state(gateway);
+
+    axum::serve(listener, app.into_make_service())
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .context("GhostDNS IPFS gateway terminated unexpectedly")
+}
+
+async fn ipfs_gateway_root() -> impl IntoResponse {
+    (StatusCode::OK, "Archon IPFS gateway ready")
+}
+
+async fn ipfs_gateway_ipfs(
+    AxumPath(path): AxumPath<String>,
+    Query(params): Query<HashMap<String, String>>,
+    State(gateway): State<Arc<IpfsGateway>>,
+) -> Result<Response, IpfsGatewayError> {
+    let request_path = path.clone();
+    match gateway.fetch(IpfsNamespace::Ipfs, path, params).await {
+        Ok(response) => Ok(response),
+        Err(err) => {
+            warn!(
+                error = %err,
+                namespace = "ipfs",
+                path = %request_path,
+                "IPFS gateway request failed"
+            );
+            Err(err)
+        }
+    }
+}
+
+async fn ipfs_gateway_ipns(
+    AxumPath(path): AxumPath<String>,
+    Query(params): Query<HashMap<String, String>>,
+    State(gateway): State<Arc<IpfsGateway>>,
+) -> Result<Response, IpfsGatewayError> {
+    let request_path = path.clone();
+    match gateway.fetch(IpfsNamespace::Ipns, path, params).await {
+        Ok(response) => Ok(response),
+        Err(err) => {
+            warn!(
+                error = %err,
+                namespace = "ipns",
+                path = %request_path,
+                "IPFS gateway request failed"
+            );
+            Err(err)
+        }
+    }
+}
+
+async fn handle_doq_connection(connection: quinn::Connection, state: Arc<DohState>) -> Result<()> {
+    loop {
+        match connection.accept_bi().await {
+            Ok((send, recv)) => {
+                let state = state.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = handle_doq_stream(send, recv, state).await {
+                        warn!(error = %err, "DoQ stream terminated with error");
+                    }
+                });
+            }
+            Err(quinn::ConnectionError::ApplicationClosed { .. })
+            | Err(quinn::ConnectionError::LocallyClosed) => break,
+            Err(err) => {
+                return Err(anyhow!("DoQ connection error: {err}"));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_doq_stream(
+    mut send: quinn::SendStream,
+    mut recv: quinn::RecvStream,
+    state: Arc<DohState>,
+) -> Result<()> {
+    let mut len_buf = [0u8; 2];
+    match AsyncReadExt::read_exact(&mut recv, &mut len_buf).await {
+        Ok(_) => {}
+        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
+        Err(err) => return Err(err).context("Failed to read DoQ frame length"),
+    }
+
+    let len = u16::from_be_bytes(len_buf) as usize;
+    if len == 0 {
+        return Ok(());
+    }
+
+    let mut payload = vec![0u8; len];
+    if let Err(err) = AsyncReadExt::read_exact(&mut recv, &mut payload).await {
+        return Err(err).context("Failed to read DoQ frame payload");
+    }
+
+    match resolve_dns_payload(state.clone(), payload.clone()).await {
+        Ok(response) => {
+            write_doq_response(&mut send, &response).await?;
+        }
+        Err(DnsProcessError::BadRequest(_)) => return Ok(()),
+        Err(DnsProcessError::Internal(_)) => {
+            if let Some(response) = build_error_response(&payload, ResponseCode::ServFail) {
+                write_doq_response(&mut send, &response).await?;
+            }
+        }
+    }
+
+    send.finish().context("Failed to finish DoQ stream")?;
+    Ok(())
+}
+
+async fn write_doq_response(stream: &mut quinn::SendStream, payload: &[u8]) -> Result<()> {
+    if payload.len() >= u16::MAX as usize {
+        anyhow::bail!("DNS message exceeds DoQ frame size limit");
+    }
+    stream
+        .write_all(&(payload.len() as u16).to_be_bytes())
+        .await
+        .context("Failed to write DoQ frame length")?;
+    stream
+        .write_all(payload)
+        .await
+        .context("Failed to write DoQ frame payload")?;
+    Ok(())
 }
 
 async fn metrics_handler(State(metrics): State<Arc<GhostDnsMetrics>>) -> Response {
@@ -826,11 +1652,16 @@ fn classify_response_for_cache(bytes: &[u8]) -> Option<CacheEntryKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::CryptoSettings;
     use anyhow::Result;
+    use axum::{Router, extract::Query, routing::post};
     use hickory_proto::rr::rdata::opt::{ClientSubnet, EdnsOption};
+    use http_body_util::BodyExt;
+    use std::collections::HashMap;
     use std::path::Path;
     use std::str::FromStr;
     use tempfile::tempdir;
+    use tokio::net::TcpListener;
     use tokio::time::{Duration as TokioDuration, sleep};
 
     fn temp_cache_config(path: &Path, ttl: u64, negative_ttl: u64) -> CacheSection {
@@ -838,13 +1669,169 @@ mod tests {
             path: Some(path.to_string_lossy().into()),
             ttl_seconds: ttl,
             negative_ttl_seconds: negative_ttl,
+            max_entries: 4096,
         }
+    }
+
+    #[test]
+    fn ghostdns_daemon_bridges_ipfs_gateway_from_server() -> Result<()> {
+        let config: GhostDnsRuntimeConfig = toml::from_str(
+            r#"
+            [server]
+            doh_listen = "127.0.0.1:0"
+            ipfs_gateway_listen = "127.0.0.1:9090"
+
+            [resolvers]
+            ipfs_api = "http://127.0.0.1:5001/api/v0"
+            "#,
+        )?;
+
+        let mut crypto_settings = CryptoSettings::default();
+        crypto_settings.resolvers.ipfs_gateway = None;
+        let crypto = CryptoStack::from_settings(&crypto_settings);
+
+        let daemon = GhostDnsDaemon::new(config, crypto)?;
+        assert_eq!(
+            daemon.crypto.resolver_settings().ipfs_gateway.as_deref(),
+            Some("http://127.0.0.1:9090")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ghostdns_daemon_respects_explicit_gateway_override() -> Result<()> {
+        let config: GhostDnsRuntimeConfig = toml::from_str(
+            r#"
+            [server]
+            doh_listen = "127.0.0.1:0"
+            ipfs_gateway_listen = "127.0.0.1:9090"
+
+            [resolvers]
+            ipfs_gateway = "https://gateway.example"
+            "#,
+        )?;
+
+        let crypto = CryptoStack::from_settings(&CryptoSettings::default());
+        let daemon = GhostDnsDaemon::new(config, crypto)?;
+        assert_eq!(
+            daemon.crypto.resolver_settings().ipfs_gateway.as_deref(),
+            Some("https://gateway.example")
+        );
+        Ok(())
     }
 
     fn sample_key() -> CacheKey {
         CacheKey {
             name: "example.com".into(),
             record_type: RecordType::A,
+        }
+    }
+
+    #[test]
+    fn normalise_ipfs_path_sanitises_input() {
+        let cleaned =
+            normalise_ipfs_path("//QmHash//subdir/file.txt".into()).expect("path should normalise");
+        assert_eq!(cleaned, "QmHash/subdir/file.txt");
+
+        let err = normalise_ipfs_path("../escape".into()).expect_err("should reject traversal");
+        assert!(matches!(err, IpfsGatewayError::BadRequest(_)));
+    }
+
+    #[test]
+    fn sanitise_filename_strips_invalid_characters() {
+        assert_eq!(sanitise_filename(""), None);
+        assert_eq!(
+            sanitise_filename("  cool?/file.txt  "),
+            Some("cool_file.txt".into())
+        );
+    }
+
+    #[tokio::test]
+    async fn ipfs_gateway_fetches_content() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let cid = "bafyipfshash";
+        let expected_arg = format!("/ipfs/{cid}");
+
+        let router = Router::new().route(
+            "/api/v0/cat",
+            post({
+                let expected_arg = expected_arg.clone();
+                move |Query(params): Query<HashMap<String, String>>| {
+                    let expected_arg = expected_arg.clone();
+                    async move {
+                        assert_eq!(params.get("arg"), Some(&expected_arg));
+                        (StatusCode::OK, Body::from("ipfs-bytes"))
+                    }
+                }
+            }),
+        );
+
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router.into_make_service())
+                .await
+                .expect("ipfs stub server error");
+        });
+        let endpoint = format!("http://{}/api/v0", addr);
+        let gateway = IpfsGateway::new(&endpoint)?;
+
+        let mut params = HashMap::new();
+        params.insert("filename".into(), "cool?.txt".into());
+
+        let response = gateway
+            .fetch(IpfsNamespace::Ipfs, cid.into(), params)
+            .await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers().clone();
+        let body = response.into_body().collect().await?.to_bytes();
+        assert_eq!(&body[..], b"ipfs-bytes");
+
+        let namespace_header = headers
+            .get(header::HeaderName::from_static(HEADER_X_IPFS_NAMESPACE))
+            .and_then(|value| value.to_str().ok())
+            .unwrap()
+            .to_string();
+        assert_eq!(namespace_header, "ipfs");
+
+        let disposition = headers
+            .get(header::CONTENT_DISPOSITION)
+            .and_then(|value| value.to_str().ok())
+            .unwrap()
+            .to_string();
+        assert_eq!(disposition, "inline; filename=\"cool.txt\"");
+
+        server.abort();
+        let _ = server.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ipfs_gateway_reports_not_found() -> Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let router = Router::new().route(
+            "/api/v0/cat",
+            post(|| async { (StatusCode::NOT_FOUND, Body::from("not found")) }),
+        );
+
+        let server = tokio::spawn(async move {
+            axum::serve(listener, router.into_make_service())
+                .await
+                .expect("ipfs stub server error");
+        });
+        let endpoint = format!("http://{}/api/v0", addr);
+        let gateway = IpfsGateway::new(&endpoint)?;
+
+        let result = gateway
+            .fetch(IpfsNamespace::Ipfs, "missing".into(), HashMap::new())
+            .await;
+
+        server.abort();
+        let _ = server.await;
+
+        match result {
+            Err(IpfsGatewayError::NotFound { .. }) => Ok(()),
+            other => panic!("expected NotFound error, got {other:?}"),
         }
     }
 
@@ -992,6 +1979,20 @@ mod tests {
         assert_eq!(resolved.profile.as_deref(), Some("quad9"));
         assert_eq!(resolved.doh_endpoint, "https://dns.quad9.net/dns-query");
         assert_eq!(resolved.dot_endpoint, "tls://dns.quad9.net");
+        assert!(
+            resolved
+                .failover_doh
+                .iter()
+                .any(|endpoint| endpoint == "https://example.com/dns-query")
+        );
+        assert!(
+            resolved
+                .failover_dot
+                .iter()
+                .any(|endpoint| endpoint == "tls://example.com")
+        );
+        assert!(resolved.failover_doh.len() > 1);
+        assert!(resolved.failover_dot.len() > 1);
     }
 
     #[test]
@@ -1005,6 +2006,20 @@ mod tests {
         assert_eq!(resolved.profile.as_deref(), Some("unknown"));
         assert_eq!(resolved.doh_endpoint, "https://custom/dns-query");
         assert_eq!(resolved.dot_endpoint, "tls://custom");
+        assert!(
+            resolved
+                .failover_doh
+                .iter()
+                .all(|endpoint| endpoint.as_str() != "https://custom/dns-query")
+        );
+        assert!(
+            resolved
+                .failover_dot
+                .iter()
+                .all(|endpoint| endpoint.as_str() != "tls://custom")
+        );
+        assert!(resolved.failover_doh.len() >= 1);
+        assert!(resolved.failover_dot.len() >= 1);
     }
 
     #[test]
@@ -1024,12 +2039,26 @@ mod tests {
             resolved.dot_endpoint,
             default_upstream_provider().dot_endpoint
         );
+        assert!(
+            resolved
+                .failover_doh
+                .iter()
+                .all(|endpoint| endpoint != &resolved.doh_endpoint)
+        );
+        assert!(
+            resolved
+                .failover_dot
+                .iter()
+                .all(|endpoint| endpoint != &resolved.dot_endpoint)
+        );
+        assert!(resolved.failover_doh.len() >= 1);
+        assert!(resolved.failover_dot.len() >= 1);
     }
 }
 
 async fn run_dot_server(
     addr: &str,
-    tls_config: Arc<ServerConfig>,
+    tls_config: Arc<RustlsServerConfig>,
     state: Arc<DohState>,
 ) -> Result<()> {
     let socket_addr: SocketAddr = addr
@@ -1154,14 +2183,41 @@ fn build_error_response(query: &[u8], code: ResponseCode) -> Option<Vec<u8>> {
     response.to_vec().ok()
 }
 
-fn load_dot_tls_config(cert_path: &str, key_path: &str) -> Result<Arc<ServerConfig>> {
-    let mut config = ServerConfig::builder()
+fn load_dot_tls_config(cert_path: &str, key_path: &str) -> Result<Arc<RustlsServerConfig>> {
+    build_tls_server_config(cert_path, key_path, &[b"dot"])
+}
+
+fn load_doq_server_config(cert_path: &str, key_path: &str) -> Result<QuinnServerConfig> {
+    let certs = load_certificates(cert_path)?;
+    let key = load_private_key(key_path)?;
+
+    let cert_chain: Vec<CertificateDer<'static>> = certs
+        .into_iter()
+        .map(|cert| CertificateDer::from(cert.0))
+        .collect();
+    let key_der = PrivateKeyDer::try_from(key.0)
+        .map_err(|_| anyhow!("Unsupported private key format for DoQ"))?;
+
+    let mut server = QuinnServerConfig::with_single_cert(cert_chain, key_der)
+        .context("Invalid DoQ certificate or key")?;
+    let mut transport = TransportConfig::default();
+    transport.keep_alive_interval(Some(Duration::from_secs(30)));
+    server.transport_config(Arc::new(transport));
+    Ok(server)
+}
+
+fn build_tls_server_config(
+    cert_path: &str,
+    key_path: &str,
+    alpns: &[&[u8]],
+) -> Result<Arc<RustlsServerConfig>> {
+    let mut config = RustlsServerConfig::builder()
         .with_safe_defaults()
         .with_no_client_auth()
         .with_single_cert(load_certificates(cert_path)?, load_private_key(key_path)?)
-        .context("Invalid DoT certificate or key")?;
+        .context("Invalid TLS certificate or key")?;
 
-    config.alpn_protocols = vec![b"dot".to_vec()];
+    config.alpn_protocols = alpns.iter().map(|proto| proto.to_vec()).collect();
     Ok(Arc::new(config))
 }
 
@@ -1349,54 +2405,289 @@ async fn forward_to_upstream(state: Arc<DohState>, request: &Message) -> Result<
     }
     let _ = apply_ecs_policy(&mut message, &state.config.security);
 
-    let payload = message
+    let payload_vec = message
         .to_vec()
         .context("failed to serialise DNS message for upstream forward")?;
-    let endpoint = &state.resolved_upstream.doh_endpoint;
-    let response = state
-        .upstream
-        .post(endpoint)
-        .header(header::CONTENT_TYPE, DNS_CONTENT_TYPE)
-        .body(payload)
-        .send()
-        .await
-        .context("upstream DoH request failed")?;
-    if !response.status().is_success() {
-        return Err(anyhow!("upstream DoH error: {}", response.status()));
-    }
-    let bytes = response
-        .bytes()
-        .await
-        .context("failed to read upstream DoH body")?;
-    let bytes = bytes.to_vec();
+    let payload = Bytes::from(payload_vec);
 
-    if state.config.security.dnssec_enforce {
-        match Message::from_vec(&bytes) {
-            Ok(resp) => {
-                if !resp.authentic_data() {
-                    if state.config.security.dnssec_fail_open {
-                        state.metrics.inc_dnssec_fail_open();
-                        warn!(
-                            "Upstream response missing DNSSEC authentication data; allowing due to fail-open policy"
-                        );
-                    } else {
-                        anyhow::bail!("upstream DoH response missing DNSSEC authentication data");
+    match forward_via_doh(&state, &payload).await {
+        Ok(bytes) => Ok(bytes),
+        Err(doh_err) => {
+            if state.resolved_upstream.dot_endpoint.trim().is_empty()
+                && state.resolved_upstream.failover_dot.is_empty()
+            {
+                return Err(doh_err);
+            }
+
+            let doh_err_msg = doh_err.to_string();
+            warn!(
+                error = %doh_err_msg,
+                "GhostDNS upstream DoH attempts exhausted; trying DoT failover"
+            );
+
+            forward_via_dot(&state, payload.as_ref(), true)
+                .await
+                .with_context(|| format!("DoT fallback failed after DoH error: {doh_err_msg}"))
+        }
+    }
+}
+
+async fn forward_via_doh(state: &Arc<DohState>, payload: &Bytes) -> Result<Vec<u8>> {
+    let mut attempts: Vec<String> =
+        Vec::with_capacity(1 + state.resolved_upstream.failover_doh.len());
+    attempts.push(state.resolved_upstream.doh_endpoint.clone());
+    attempts.extend(state.resolved_upstream.failover_doh.clone());
+
+    let mut last_error: Option<anyhow::Error> = None;
+    for (idx, endpoint) in attempts.iter().enumerate() {
+        if idx > 0 {
+            warn!(
+                attempt = idx + 1,
+                endpoint = %endpoint,
+                "GhostDNS upstream DoH failover attempt"
+            );
+            state.metrics.inc_doh_failover_attempt();
+        }
+
+        match state
+            .upstream
+            .post(endpoint)
+            .header(header::CONTENT_TYPE, DNS_CONTENT_TYPE)
+            .body(payload.clone())
+            .send()
+            .await
+        {
+            Ok(response) => {
+                if !response.status().is_success() {
+                    let status = response.status();
+                    last_error = Some(anyhow!("upstream DoH error: {status}"));
+                    continue;
+                }
+                match response.bytes().await {
+                    Ok(bytes) => {
+                        let bytes = bytes.to_vec();
+                        if let Err(err) = verify_dnssec_if_required(state, &bytes) {
+                            last_error = Some(err);
+                            continue;
+                        }
+                        state.metrics.set_doh_active_index(idx);
+                        {
+                            let mut runtime = state.upstream_state.lock().await;
+                            runtime.record_doh_success(endpoint, idx);
+                        }
+                        return Ok(bytes);
+                    }
+                    Err(err) => {
+                        last_error = Some(anyhow!("failed to read upstream DoH body: {err}"));
                     }
                 }
             }
             Err(err) => {
-                if state.config.security.dnssec_fail_open {
-                    state.metrics.inc_dnssec_fail_open();
-                    warn!(error = %err, "Failed to parse upstream response for DNSSEC verification; allowing due to fail-open policy");
-                } else {
-                    return Err(err)
-                        .context("failed to parse upstream response for DNSSEC verification");
-                }
+                last_error = Some(anyhow!("upstream DoH request failed: {err}"));
             }
         }
     }
 
-    Ok(bytes)
+    Err(last_error.unwrap_or_else(|| anyhow!("all upstream DoH attempts failed")))
+}
+
+async fn forward_via_dot(
+    state: &Arc<DohState>,
+    payload: &[u8],
+    triggered_by_doh_failure: bool,
+) -> Result<Vec<u8>> {
+    if payload.len() > u16::MAX as usize {
+        anyhow::bail!("DNS message exceeds DoT frame size limit");
+    }
+
+    let mut attempts: Vec<String> =
+        Vec::with_capacity(1 + state.resolved_upstream.failover_dot.len());
+    attempts.push(state.resolved_upstream.dot_endpoint.clone());
+    attempts.extend(state.resolved_upstream.failover_dot.clone());
+
+    let connector = build_dot_tls_connector()?;
+    let mut last_error: Option<anyhow::Error> = None;
+
+    for (idx, endpoint) in attempts.iter().enumerate() {
+        if endpoint.trim().is_empty() {
+            continue;
+        }
+
+        let (host, port) = match parse_dot_endpoint(endpoint) {
+            Ok(value) => value,
+            Err(err) => {
+                last_error = Some(err);
+                continue;
+            }
+        };
+
+        if idx > 0 {
+            warn!(
+                attempt = idx + 1,
+                endpoint = %endpoint,
+                "GhostDNS upstream DoT failover attempt"
+            );
+        }
+
+        if triggered_by_doh_failure || idx > 0 {
+            state.metrics.inc_dot_failover_attempt();
+        }
+
+        let server_name = match build_server_name(&host) {
+            Ok(name) => name,
+            Err(err) => {
+                last_error = Some(err);
+                continue;
+            }
+        };
+
+        match perform_dot_exchange(&connector, &host, port, server_name, payload).await {
+            Ok(bytes) => {
+                if let Err(err) = verify_dnssec_if_required(state, &bytes) {
+                    last_error = Some(err);
+                    continue;
+                }
+                state.metrics.set_dot_active_index(idx);
+                {
+                    let mut runtime = state.upstream_state.lock().await;
+                    runtime.record_dot_success(endpoint, idx, triggered_by_doh_failure);
+                }
+                return Ok(bytes);
+            }
+            Err(err) => {
+                last_error = Some(err);
+                continue;
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| anyhow!("all upstream DoT attempts failed")))
+}
+
+fn build_dot_tls_connector() -> Result<TlsConnector> {
+    let mut root_store = RootCertStore::empty();
+    root_store.add_trust_anchors(TLS_SERVER_ROOTS.iter().map(|anchor| {
+        OwnedTrustAnchor::from_subject_spki_name_constraints(
+            anchor.subject,
+            anchor.spki,
+            anchor.name_constraints,
+        )
+    }));
+
+    let config = ClientConfig::builder()
+        .with_safe_defaults()
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+
+    Ok(TlsConnector::from(Arc::new(config)))
+}
+
+fn parse_dot_endpoint(endpoint: &str) -> Result<(String, u16)> {
+    let trimmed = endpoint.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("empty DoT endpoint");
+    }
+
+    let url = Url::parse(trimmed).or_else(|_| Url::parse(&format!("tls://{trimmed}")))?;
+    if url.scheme() != "tls" {
+        anyhow::bail!("unsupported DoT endpoint scheme: {}", url.scheme());
+    }
+
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow!("DoT endpoint missing host: {trimmed}"))?
+        .to_string();
+    let port = url.port().unwrap_or(853);
+
+    Ok((host, port))
+}
+
+fn build_server_name(host: &str) -> Result<ServerName> {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        Ok(ServerName::IpAddress(ip))
+    } else {
+        ServerName::try_from(host).map_err(|_| anyhow!("invalid DoT endpoint host: {host}"))
+    }
+}
+
+async fn perform_dot_exchange(
+    connector: &TlsConnector,
+    host: &str,
+    port: u16,
+    server_name: ServerName,
+    payload: &[u8],
+) -> Result<Vec<u8>> {
+    let addr = format!("{host}:{port}");
+    let stream = TcpStream::connect(&addr)
+        .await
+        .with_context(|| format!("failed to connect to DoT upstream {addr}"))?;
+
+    let mut tls_stream = connector
+        .connect(server_name, stream)
+        .await
+        .with_context(|| format!("TLS handshake with DoT upstream {addr} failed"))?;
+
+    tls_stream
+        .write_u16(payload.len() as u16)
+        .await
+        .context("failed to write DoT request length")?;
+    tls_stream
+        .write_all(payload)
+        .await
+        .context("failed to write DoT request payload")?;
+    tls_stream
+        .flush()
+        .await
+        .context("failed to flush DoT request")?;
+
+    let mut len_buf = [0u8; 2];
+    tls_stream
+        .read_exact(&mut len_buf)
+        .await
+        .context("failed to read DoT response length")?;
+    let response_len = u16::from_be_bytes(len_buf) as usize;
+    let mut response = vec![0u8; response_len];
+    tls_stream
+        .read_exact(&mut response)
+        .await
+        .context("failed to read DoT response payload")?;
+
+    Ok(response)
+}
+
+fn verify_dnssec_if_required(state: &Arc<DohState>, bytes: &[u8]) -> Result<()> {
+    if !state.config.security.dnssec_enforce {
+        return Ok(());
+    }
+
+    match Message::from_vec(bytes) {
+        Ok(resp) => {
+            if !resp.authentic_data() {
+                if state.config.security.dnssec_fail_open {
+                    state.metrics.inc_dnssec_fail_open();
+                    warn!(
+                        "Upstream response missing DNSSEC authentication data; allowing due to fail-open policy"
+                    );
+                    Ok(())
+                } else {
+                    Err(anyhow!(
+                        "upstream DoH response missing DNSSEC authentication data"
+                    ))
+                }
+            } else {
+                Ok(())
+            }
+        }
+        Err(err) => {
+            if state.config.security.dnssec_fail_open {
+                state.metrics.inc_dnssec_fail_open();
+                warn!(error = %err, "Failed to parse upstream response for DNSSEC verification; allowing due to fail-open policy");
+                Ok(())
+            } else {
+                Err(err).context("failed to parse upstream response for DNSSEC verification")
+            }
+        }
+    }
 }
 
 fn enable_dnssec_flag(message: &mut Message) {
@@ -1451,7 +2742,11 @@ impl Default for GhostDnsRuntimeConfig {
                 dot_listen: Some("127.0.0.1:853".into()),
                 dot_cert_path: None,
                 dot_key_path: None,
+                doq_listen: Some("127.0.0.1:784".into()),
+                doq_cert_path: None,
+                doq_key_path: None,
                 metrics_listen: None,
+                ipfs_gateway_listen: default_ipfs_gateway_listen(),
             },
             cache: CacheSection::default(),
             resolvers: ResolversSection::default(),
