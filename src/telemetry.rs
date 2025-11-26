@@ -19,7 +19,7 @@ use tracing::{Subscriber, info, info_span, warn};
 use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt;
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt, Layer};
+use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt};
 use uuid::Uuid;
 
 use crate::config::{EngineKind, LaunchMode, TelemetrySettings, TraceSettings};
@@ -678,6 +678,7 @@ mod tests {
             api_key_env: None,
             buffer_dir: Some(dir.path().to_path_buf()),
             max_buffer_bytes: Some(1024),
+            traces: TraceSettings::default(),
         };
 
         let telemetry = ServiceTelemetry::new("archon-host", &settings);
@@ -703,6 +704,7 @@ mod tests {
             api_key_env: None,
             buffer_dir: Some(dir.path().to_path_buf()),
             max_buffer_bytes: Some(1024),
+            traces: TraceSettings::default(),
         };
 
         let telemetry = ServiceTelemetry::new("archon-host", &settings);

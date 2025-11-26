@@ -156,6 +156,7 @@ impl AiBridge {
             AiProviderKind::Claude => self.chat_with_claude(config, &prompt, http),
             AiProviderKind::Gemini => self.chat_with_gemini(config, &prompt, http),
             AiProviderKind::Xai => self.chat_with_xai(config, &prompt, http),
+            AiProviderKind::Perplexity => self.chat_with_perplexity(config, &prompt, http),
         };
 
         let mut response = match response_result {
@@ -255,6 +256,7 @@ impl AiBridge {
         let payload = json!({
             "model": model,
             "messages": messages,
+            "stream": false,
         });
 
         let started = Instant::now();
@@ -558,6 +560,74 @@ impl AiBridge {
         Ok(AiChatResponse {
             provider: config.name.clone(),
             model,
+            reply,
+            latency_ms: elapsed.as_millis() as u64,
+            conversation_id: None,
+            transcript: None,
+        })
+    }
+
+    fn chat_with_perplexity<T: AiHttp>(
+        &self,
+        config: &AiProviderConfig,
+        prompt: &AiChatPrompt,
+        http: &T,
+    ) -> Result<AiChatResponse> {
+        if !prompt.attachments.is_empty() {
+            bail!("Perplexity chat API does not support attachments yet");
+        }
+
+        let api_key = require_api_key(config)?;
+        let model = config
+            .default_model
+            .clone()
+            .unwrap_or_else(|| "sonar".into());
+        let chat_path = config
+            .chat_path
+            .clone()
+            .unwrap_or_else(|| "chat/completions".into());
+        let url = join_endpoint(config.endpoint.trim_end_matches('/'), &chat_path);
+        let temperature = config.temperature.unwrap_or(0.2);
+        let headers = vec![
+            ("Authorization".into(), format!("Bearer {api_key}")),
+            ("Content-Type".into(), "application/json".into()),
+        ];
+
+        if prompt.text.trim().is_empty() {
+            bail!("prompt must include text");
+        }
+
+        let mut messages = Vec::new();
+        messages.push(json!({"role": "system", "content": SYSTEM_PROMPT}));
+        for entry in &prompt.history {
+            messages.push(json!({
+                "role": entry.role.as_api_role(),
+                "content": entry.content.clone(),
+            }));
+        }
+        messages.push(json!({"role": "user", "content": prompt.text.clone()}));
+
+        let payload = json!({
+            "model": model,
+            "temperature": temperature,
+            "messages": messages,
+        });
+
+        let started = Instant::now();
+        let response = http.post_json(&url, &headers, &payload)?;
+        let elapsed = started.elapsed();
+        let parsed: PerplexityChatResponse = serde_json::from_value(response)
+            .with_context(|| "Malformed response from Perplexity chat endpoint".to_string())?;
+        let reply = parsed
+            .choices
+            .first()
+            .and_then(|choice| choice.message.as_ref())
+            .map(|message| message.text_content())
+            .unwrap_or_default();
+
+        Ok(AiChatResponse {
+            provider: config.name.clone(),
+            model: parsed.model.unwrap_or_else(|| model.clone()),
             reply,
             latency_ms: elapsed.as_millis() as u64,
             conversation_id: None,
@@ -1096,6 +1166,57 @@ struct OpenAiChatMessage {
 }
 
 #[derive(Debug, Deserialize)]
+struct PerplexityChatResponse {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    choices: Vec<PerplexityChatChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PerplexityChatChoice {
+    #[serde(default)]
+    message: Option<PerplexityChatMessage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PerplexityChatMessage {
+    #[serde(default)]
+    content: Value,
+}
+
+impl PerplexityChatMessage {
+    fn text_content(&self) -> String {
+        match &self.content {
+            Value::String(text) => text.trim().to_string(),
+            Value::Array(items) => {
+                let mut segments = Vec::new();
+                for item in items {
+                    if let Some(text) = item.get("text").and_then(|value| value.as_str()) {
+                        segments.push(text.trim());
+                    } else if let Some(content) =
+                        item.get("content").and_then(|value| value.as_str())
+                    {
+                        segments.push(content.trim());
+                    }
+                }
+                segments.join(" ")
+            }
+            Value::Object(map) => {
+                if let Some(text) = map.get("text").and_then(|value| value.as_str()) {
+                    text.trim().to_string()
+                } else if let Some(content) = map.get("content").and_then(|value| value.as_str()) {
+                    content.trim().to_string()
+                } else {
+                    String::new()
+                }
+            }
+            _ => String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
 struct ClaudeChatResponse {
     #[serde(default)]
     model: Option<String>,
@@ -1209,7 +1330,7 @@ mod tests {
     use std::fs;
     use std::sync::Arc;
 
-    use crate::config::TelemetrySettings;
+    use crate::config::{TelemetrySettings, TraceSettings};
     use crate::telemetry::ServiceTelemetry;
     use crate::transcript::TranscriptStore;
     use tempfile::tempdir;
@@ -1383,6 +1504,57 @@ mod tests {
     }
 
     #[test]
+    fn chat_with_perplexity_includes_bearer_token() {
+        let mut settings = AiSettings::default();
+        settings.default_provider = "perplexity".into();
+        for provider in settings.providers.iter_mut() {
+            provider.enabled = provider.name == "perplexity";
+        }
+        unsafe {
+            std::env::set_var("PERPLEXITY_API_KEY", "ppx-example");
+        }
+
+        let bridge = bridge_with_settings(&settings);
+        let provider = settings
+            .providers
+            .iter()
+            .find(|p| p.name == "perplexity")
+            .unwrap();
+        let chat_path = provider.chat_path.clone().unwrap();
+        let url = join_endpoint(provider.endpoint.trim_end_matches('/'), &chat_path);
+        let stub = StubAiHttp::new(vec![(
+            url.clone(),
+            json!({
+                "model": provider.default_model.clone().unwrap(),
+                "choices": [
+                    {"message": {"content": "hello from perplexity"}}
+                ]
+            }),
+        )]);
+
+        let response = bridge
+            .chat(None, "hello", &stub)
+            .expect("chat should succeed");
+        assert_eq!(response.reply, "hello from perplexity");
+        assert_eq!(response.provider, "perplexity");
+
+        let calls = stub.calls();
+        assert_eq!(calls.len(), 1);
+        let call = &calls[0];
+        assert_eq!(call.url, url);
+        assert!(
+            call.headers
+                .iter()
+                .any(|(key, value)| key.eq_ignore_ascii_case("authorization")
+                    && value == "Bearer ppx-example")
+        );
+
+        unsafe {
+            std::env::remove_var("PERPLEXITY_API_KEY");
+        }
+    }
+
+    #[test]
     fn image_attachment_without_vision_capability_is_rejected() {
         let mut settings = AiSettings::default();
         settings.default_provider = "xai".into();
@@ -1452,6 +1624,7 @@ mod tests {
             api_key_env: None,
             buffer_dir: Some(telemetry_dir.path().to_path_buf()),
             max_buffer_bytes: Some(4096),
+            traces: TraceSettings::default(),
         };
         let telemetry = ServiceTelemetry::new("archon-host", &telemetry_settings);
 
@@ -1507,6 +1680,7 @@ mod tests {
             api_key_env: None,
             buffer_dir: Some(telemetry_dir.path().to_path_buf()),
             max_buffer_bytes: Some(4096),
+            traces: TraceSettings::default(),
         };
         let telemetry = ServiceTelemetry::new("archon-host", &telemetry_settings);
 

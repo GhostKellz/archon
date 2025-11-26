@@ -1,50 +1,46 @@
-FROM ubuntu:24.04
+FROM rust:1.82-slim-bookworm
 
-ENV DEBIAN_FRONTEND=noninteractive
-ENV RUSTUP_HOME=/home/runner/.rustup
-ENV CARGO_HOME=/home/runner/.cargo
-ENV PATH="/home/runner/.cargo/bin:$PATH"
+ARG USER=archon
+ARG UID=1000
+ARG GID=1000
 
-# ✅ sources + install base deps
-RUN echo "deb http://archive.ubuntu.com/ubuntu noble main restricted universe multiverse" > /etc/apt/sources.list && \
-    echo "deb http://archive.ubuntu.com/ubuntu noble-updates main restricted universe multiverse" >> /etc/apt/sources.list && \
-    echo "deb http://archive.ubuntu.com/ubuntu noble-security main restricted universe multiverse" >> /etc/apt/sources.list && \
-    apt-get update && \
-    apt-get install -y \
-    curl wget unzip tar git sudo gnupg ca-certificates \
-    build-essential pkg-config libssl-dev libffi-dev \
-    libicu-dev lsb-release libatomic1 gpg \
-    python3-pip software-properties-common \
-    liblua5.4-dev lua5.4 libtool libtool-bin libreadline-dev** && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+ENV ARCHON_USER=${USER}
+ENV ARCHON_UID=${UID}
+ENV ARCHON_GID=${GID}
+ENV CARGO_HOME=/home/${USER}/.cargo
+ENV RUSTUP_HOME=/home/${USER}/.rustup
+ENV PATH="${CARGO_HOME}/bin:${PATH}"
 
-# ✅ NVIDIA Container Toolkit (use 22.04 source — 24.04 not available)
-RUN curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg && \
-    curl -s -L https://nvidia.github.io/libnvidia-container/ubuntu22.04/libnvidia-container.list | \
-    sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#' | \
-    tee /etc/apt/sources.list.d/nvidia-container-toolkit.list && \
-    apt-get update && \
-    apt-get install -y nvidia-container-toolkit && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    libsqlite3-dev \
+    libclang-dev \
+    clang \
+    cmake \
+    git \
+    curl \
+    ca-certificates \
+    python3 \
+    python3-pip \
+    wget \
+    gosu \
+    && rm -rf /var/lib/apt/lists/*
 
-# ✅ Create non-root runner user
-RUN useradd -m runner && echo "runner ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+RUN groupadd --gid ${GID} ${USER} && \
+    useradd --uid ${UID} --gid ${GID} --create-home --shell /bin/bash ${USER}
 
-USER runner
-WORKDIR /home/runner
+RUN mkdir -p /workspace && chown ${USER}:${USER} /workspace
 
-# ✅ Install Rust and key tooling
-SHELL ["/bin/bash", "-l", "-c"]
-RUN curl https://sh.rustup.rs -sSf | sh -s -- -y && \
-    rustup component add clippy rustfmt && \
-    cargo install cargo-watch && \
-    cargo install cross
+COPY dev/entrypoint.sh /usr/local/bin/container-entrypoint
+RUN chmod +x /usr/local/bin/container-entrypoint
 
-# ✅ Setup GitHub Actions runner
-WORKDIR /runner
-COPY --chown=runner:runner entrypoint.sh .
-RUN chmod +x entrypoint.sh && \
-    curl -o actions-runner.tar.gz -L https://github.com/actions/runner/releases/download/v2.324.0/actions-runner-linux-x64-2.324.0.tar.gz && \
-    tar xzf actions-runner.tar.gz && rm actions-runner.tar.gz
+WORKDIR /workspace
 
-ENTRYPOINT ["/runner/entrypoint.sh"]
+RUN gosu ${USER} /usr/local/cargo/bin/rustup set profile minimal && \
+    gosu ${USER} /usr/local/cargo/bin/rustup default stable && \
+    gosu ${USER} /usr/local/cargo/bin/rustup component add clippy rustfmt
+
+ENTRYPOINT ["/usr/local/bin/container-entrypoint"]
+CMD ["bash"]

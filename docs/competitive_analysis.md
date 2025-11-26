@@ -119,8 +119,7 @@ POST /n8n/webhook/:path
 1. **Crypto Trading**: Domain resolves → trigger workflow → check wallet → alert
 2. **Research**: Read article → summarize → send to Notion/Airtable
 3. **Monitoring**: Page changes → diff → notify Slack
-4. **Data Extract**: Scrape page → transform → send to database
-
+  
 ### Phase 6: AI Vision & Page Analysis
 
 **Goal:** Match Atlas/Comet visual intelligence

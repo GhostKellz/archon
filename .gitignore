@@ -7,6 +7,8 @@ CLAUDE.md
 CODEX.md
 archive/ 
 .venv/
+dev/configs/
+.env
 
 
 # Added by cargo

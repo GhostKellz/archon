@@ -1,9 +1,21 @@
-use std::{convert::Infallible, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    convert::Infallible,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    thread,
+    time::{Duration, Instant, SystemTime},
+};
 
 use anyhow::{Context, Result, bail};
-use archon::ai::{AiAttachment, AiAttachmentKind, AiBridge, AiChatPrompt, AiChatResponse};
-use archon::ai::{AiChatHistoryEntry, AiChatRole};
-use archon::config::{AiHostSettings, LaunchSettings, default_config_path};
+use archon::ai::{
+    AiAttachment, AiAttachmentKind, AiBridge, AiChatHistoryEntry, AiChatPrompt, AiChatResponse,
+    AiChatRole, AiHttp, BlockingAiHttp,
+};
+use archon::config::{
+    AiHostSettings, AiProviderConfig, AiProviderKind, LaunchSettings, default_config_path,
+};
 use archon::crypto::CryptoStack;
 use archon::host::AiHost;
 use archon::mcp::{McpOrchestrator, McpToolCallResponse};
@@ -66,6 +78,21 @@ struct AppState {
     mcp: Arc<McpOrchestrator>,
     transcripts: Arc<TranscriptStore>,
     crypto: Arc<CryptoStack>,
+    provider_health: Arc<Mutex<HashMap<String, ProviderHealthSnapshot>>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProviderHealthSnapshot {
+    provider: String,
+    kind: String,
+    healthy: bool,
+    latency_ms: u64,
+    attempts: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    #[serde(skip_serializing_if = "Value::is_null")]
+    details: Value,
+    checked_at_ms: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -241,6 +268,270 @@ fn apply_overrides(settings: &mut AiHostSettings, args: &Args) {
     settings.enabled = true;
 }
 
+const HEALTH_PROBE_MAX_ATTEMPTS: u32 = 3;
+const HEALTH_PROBE_RETRY_DELAY: Duration = Duration::from_secs(2);
+const HEALTH_PROBE_INTERVAL: Duration = Duration::from_secs(60);
+
+fn run_provider_health_checks(
+    bridge: &AiBridge,
+    telemetry: &ServiceTelemetry,
+    cache: Arc<Mutex<HashMap<String, ProviderHealthSnapshot>>>,
+) {
+    let providers: Vec<AiProviderConfig> = bridge
+        .providers()
+        .iter()
+        .filter(|provider| provider.enabled)
+        .cloned()
+        .collect();
+
+    if providers.is_empty() {
+        return;
+    }
+
+    let initial_client = BlockingAiHttp::default();
+    perform_provider_health_cycle(&providers, &initial_client, telemetry, &cache, false);
+
+    let thread_providers = providers;
+    let thread_cache = cache;
+    let thread_telemetry = telemetry.clone();
+
+    thread::spawn(move || {
+        let client = BlockingAiHttp::default();
+        loop {
+            perform_provider_health_cycle(
+                &thread_providers,
+                &client,
+                &thread_telemetry,
+                &thread_cache,
+                true,
+            );
+            thread::sleep(HEALTH_PROBE_INTERVAL);
+        }
+    });
+}
+
+fn current_timestamp_ms() -> u64 {
+    match SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(duration) => duration.as_millis() as u64,
+        Err(_) => 0,
+    }
+}
+
+fn perform_provider_health_cycle(
+    providers: &[AiProviderConfig],
+    client: &BlockingAiHttp,
+    telemetry: &ServiceTelemetry,
+    cache: &Arc<Mutex<HashMap<String, ProviderHealthSnapshot>>>,
+    allow_retry_delay: bool,
+) {
+    for provider in providers {
+        if !matches!(
+            provider.kind,
+            AiProviderKind::LocalOllama | AiProviderKind::Gemini | AiProviderKind::Perplexity
+        ) {
+            continue;
+        }
+
+        let mut attempts = 0;
+        let mut healthy = false;
+        let mut latency_ms = 0;
+        let mut details = Value::Null;
+        let mut error_message: Option<String> = None;
+
+        for attempt in 1..=HEALTH_PROBE_MAX_ATTEMPTS {
+            attempts = attempt;
+            let started = Instant::now();
+            let probe_result = match provider.kind {
+                AiProviderKind::LocalOllama => probe_ollama(client, provider),
+                AiProviderKind::Gemini => probe_gemini(client, provider),
+                AiProviderKind::Perplexity => probe_perplexity(client, provider),
+                _ => unreachable!("unsupported provider kind in health checks"),
+            };
+
+            match probe_result {
+                Ok(probe_details) => {
+                    latency_ms = started.elapsed().as_millis() as u64;
+                    details = probe_details.clone();
+                    healthy = true;
+                    error_message = None;
+                    info!(
+                        provider = %provider.name,
+                        latency_ms,
+                        attempts,
+                        "provider health probe succeeded"
+                    );
+                    telemetry.record_metric(
+                        "ai_provider_health",
+                        json!({
+                            "provider": provider.name.as_str(),
+                            "healthy": true,
+                            "latency_ms": latency_ms,
+                            "attempts": attempts,
+                            "details": probe_details,
+                        }),
+                    );
+                    break;
+                }
+                Err(err) => {
+                    latency_ms = started.elapsed().as_millis() as u64;
+                    error_message = Some(err.to_string());
+                    if attempt == HEALTH_PROBE_MAX_ATTEMPTS {
+                        warn!(
+                            provider = %provider.name,
+                            attempts,
+                            error = %err,
+                            "provider health probe failed after retries"
+                        );
+                        telemetry.record_metric(
+                            "ai_provider_health",
+                            json!({
+                                "provider": provider.name.as_str(),
+                                "healthy": false,
+                                "latency_ms": latency_ms,
+                                "attempts": attempts,
+                                "error": err.to_string(),
+                            }),
+                        );
+                    } else {
+                        warn!(
+                            provider = %provider.name,
+                            attempt = attempt,
+                            error = %err,
+                            "provider health probe attempt failed; retrying"
+                        );
+                        if allow_retry_delay {
+                            thread::sleep(HEALTH_PROBE_RETRY_DELAY);
+                        }
+                    }
+                }
+            }
+        }
+
+        let final_details = if healthy { details } else { Value::Null };
+        let snapshot = ProviderHealthSnapshot {
+            provider: provider.name.clone(),
+            kind: provider.kind.to_string(),
+            healthy,
+            latency_ms,
+            attempts,
+            error: error_message,
+            details: final_details,
+            checked_at_ms: current_timestamp_ms(),
+        };
+
+        match cache.lock() {
+            Ok(mut guard) => {
+                guard.insert(provider.name.clone(), snapshot);
+            }
+            Err(err) => {
+                warn!(error = %err, "provider health cache lock poisoned");
+            }
+        }
+    }
+}
+
+fn probe_ollama(client: &BlockingAiHttp, provider: &AiProviderConfig) -> Result<Value> {
+    let base = provider.endpoint.trim_end_matches('/');
+    let url = join_endpoint(base, "api/version");
+    let payload = client.get_json(&url, &[])?;
+    let version = payload
+        .get("version")
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
+    Ok(json!({ "version": version }))
+}
+
+fn probe_gemini(client: &BlockingAiHttp, provider: &AiProviderConfig) -> Result<Value> {
+    let api_key = resolve_api_key(provider)?;
+    let base = provider.endpoint.trim_end_matches('/');
+    let url = join_endpoint(base, "v1beta/models");
+    let headers = vec![("x-goog-api-key".into(), api_key)];
+    let payload = client.get_json(&url, &headers)?;
+    let models = payload.get("models").and_then(|value| value.as_array());
+    let model_count = models.map(|value| value.len()).unwrap_or(0);
+    let first_model = models
+        .and_then(|collection| collection.first())
+        .and_then(|model| model.get("name"))
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string());
+    Ok(json!({
+        "model_count": model_count,
+        "first_model": first_model,
+    }))
+}
+
+fn probe_perplexity(client: &BlockingAiHttp, provider: &AiProviderConfig) -> Result<Value> {
+    let api_key = resolve_api_key(provider)?;
+    let base = provider.endpoint.trim_end_matches('/');
+    let chat_path = provider
+        .chat_path
+        .clone()
+        .unwrap_or_else(|| "chat/completions".into());
+    let url = join_endpoint(base, &chat_path);
+    let headers = vec![
+        ("Authorization".into(), format!("Bearer {api_key}")),
+        ("Content-Type".into(), "application/json".into()),
+    ];
+    let model = provider
+        .default_model
+        .clone()
+        .unwrap_or_else(|| "sonar".into());
+    let payload = json!({
+        "model": model.clone(),
+        "messages": [
+            {"role": "user", "content": "health check"}
+        ],
+        "temperature": 0.0,
+        "max_tokens": 1,
+        "stream": false,
+    });
+    let response = client.post_json(&url, &headers, &payload)?;
+    let returned_model = response
+        .get("model")
+        .and_then(|value| value.as_str())
+        .map(|value| value.to_string())
+        .unwrap_or(model);
+    let total_tokens = response
+        .get("usage")
+        .and_then(|usage| usage.get("total_tokens"))
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    Ok(json!({
+        "model": returned_model,
+        "total_tokens": total_tokens,
+    }))
+}
+
+fn resolve_api_key(provider: &AiProviderConfig) -> Result<String> {
+    let env_key = provider.api_key_env.as_ref().with_context(|| {
+        format!(
+            "API key environment variable not set for provider {}",
+            provider.name
+        )
+    })?;
+    let value = std::env::var(env_key).with_context(|| {
+        format!(
+            "Environment variable {env_key} not found for provider {}",
+            provider.name
+        )
+    })?;
+    if value.trim().is_empty() {
+        bail!(
+            "Environment variable {env_key} for provider {} is empty",
+            provider.name
+        );
+    }
+    Ok(value)
+}
+
+fn join_endpoint(base: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -278,12 +569,28 @@ async fn main() -> Result<()> {
             return Err(err);
         }
     };
+    let provider_health = Arc::new(Mutex::new(HashMap::new()));
+
     let bridge = Arc::new(AiBridge::from_settings_with_telemetry(
         &settings.ai,
         Arc::clone(&transcripts),
         Some(telemetry.clone()),
     ));
-    let mcp = Arc::new(McpOrchestrator::from_settings(&settings.mcp));
+
+    run_provider_health_checks(bridge.as_ref(), &telemetry, Arc::clone(&provider_health));
+
+    let mcp_settings = settings.mcp.clone();
+    let mcp =
+        match tokio::task::spawn_blocking(move || McpOrchestrator::from_settings(mcp_settings))
+            .await
+        {
+            Ok(orchestrator) => Arc::new(orchestrator),
+            Err(err) => {
+                let error = anyhow::anyhow!(err).context("failed to initialise MCP orchestrator");
+                telemetry.record_error(&error);
+                return Err(error);
+            }
+        };
     let crypto = Arc::new(CryptoStack::from_settings(&settings.crypto));
 
     let outcome = match ai_host.write_default_config(&settings.ai, &settings.mcp, args.force) {
@@ -368,6 +675,7 @@ async fn main() -> Result<()> {
         mcp,
         transcripts,
         crypto,
+        provider_health,
     };
     let router = Router::new()
         .route("/health", get(health_handler))
@@ -957,6 +1265,13 @@ async fn health_handler(State(state): State<AppState>) -> Json<Value> {
     let providers_report = state.bridge.health_report();
     let mcp_report = state.mcp.health_report();
     let metrics = state.bridge.provider_metrics();
+    let provider_health: Vec<ProviderHealthSnapshot> = match state.provider_health.lock() {
+        Ok(guard) => guard.values().cloned().collect(),
+        Err(poisoned) => {
+            let guard = poisoned.into_inner();
+            guard.values().cloned().collect()
+        }
+    };
     let payload = json!({
         "status": "ok",
         "default_provider": providers_report.default_provider,
@@ -995,6 +1310,7 @@ async fn health_handler(State(state): State<AppState>) -> Json<Value> {
         }
         ,
         "metrics": metrics,
+        "provider_health": provider_health,
     });
     Json(payload)
 }

@@ -21,16 +21,13 @@ pub struct McpOrchestrator {
 }
 
 impl McpOrchestrator {
-    pub fn from_settings(settings: &McpSettings) -> Self {
+    pub fn from_settings(settings: McpSettings) -> Self {
         let client = Client::builder()
             .user_agent("Archon/0.1 (mcp-orchestrator)")
             .timeout(Duration::from_secs(4))
             .build()
             .expect("failed to build reqwest client for MCP orchestrator");
-        Self {
-            settings: settings.clone(),
-            client,
-        }
+        Self { settings, client }
     }
 
     pub fn connectors(&self) -> &[McpConnector] {
@@ -363,7 +360,7 @@ mod tests {
                 enabled: false,
             }],
         };
-        let orchestrator = McpOrchestrator::from_settings(&settings);
+        let orchestrator = McpOrchestrator::from_settings(settings.clone());
         let report = orchestrator.health_report();
         assert_eq!(report.connectors.len(), 1);
         let status = &report.connectors[0];

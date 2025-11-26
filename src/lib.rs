@@ -14,17 +14,17 @@ pub mod theme;
 pub mod transcript;
 pub mod ui;
 
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{fs, path::PathBuf, sync::Arc, thread, time::Instant};
 
 use anyhow::{Context, Result};
 use chrono::{Duration, Utc};
-use tracing::{info, info_span, warn};
+use tracing::{debug, info, info_span, warn};
 use uuid::Uuid;
 
-use crate::ai::{AiBridge, AiChatPrompt, AiChatResponse, AiHealthReport, BlockingAiHttp};
+use crate::ai::{AiBridge, AiChatPrompt, AiChatResponse, AiHealthReport, AiHttp, BlockingAiHttp};
 use crate::config::{
-    EngineKind, LaunchMode, LaunchRequest, LaunchSettings, PolicyProfile,
-    TranscriptRetentionSettings, UiSettings, default_config_path,
+    AiProviderConfig, AiProviderKind, EngineKind, LaunchMode, LaunchRequest, LaunchSettings,
+    PolicyProfile, TranscriptRetentionSettings, UiSettings, default_config_path,
 };
 use crate::crypto::{CryptoHealthReport, CryptoStack, DomainResolution};
 use crate::engine::{CommandSpec, EngineRegistry};
@@ -38,6 +38,38 @@ use crate::telemetry::ProcessMonitor;
 use crate::theme::ThemeRegistry;
 use crate::transcript::{TranscriptRetention, TranscriptStore};
 use crate::ui::{UiHealthReport, UiShell};
+
+struct StartupTimeline {
+    start: Instant,
+    last: Instant,
+    stages: Vec<(&'static str, u128)>,
+}
+
+impl StartupTimeline {
+    fn new() -> Self {
+        let now = Instant::now();
+        Self {
+            start: now,
+            last: now,
+            stages: Vec::new(),
+        }
+    }
+
+    fn record(&mut self, name: &'static str) {
+        let now = Instant::now();
+        let elapsed_ms = now.duration_since(self.last).as_millis();
+        self.stages.push((name, elapsed_ms));
+        self.last = now;
+    }
+
+    fn total_ms(&self) -> u128 {
+        self.start.elapsed().as_millis()
+    }
+
+    fn into_stages(self) -> Vec<(&'static str, u128)> {
+        self.stages
+    }
+}
 
 /// Primary orchestrator responsible for coordinating engines and profiles.
 pub struct Launcher {
@@ -54,6 +86,64 @@ pub struct Launcher {
 }
 
 impl Launcher {
+    fn spawn_startup_tasks(&self) {
+        self.spawn_ollama_warmup();
+    }
+
+    fn spawn_ollama_warmup(&self) {
+        fn warm_ollama_manifest(
+            client: &BlockingAiHttp,
+            provider: &AiProviderConfig,
+        ) -> Result<usize> {
+            let base = provider.endpoint.trim_end_matches('/');
+            let url = format!("{base}/api/tags");
+            let response = client.get_json(&url, &[])?;
+            let model_count = response
+                .get("models")
+                .and_then(|value| value.as_array())
+                .map(|models| models.len())
+                .unwrap_or(0);
+            Ok(model_count)
+        }
+
+        let providers: Vec<AiProviderConfig> = self
+            .settings
+            .ai
+            .providers
+            .iter()
+            .filter(|provider| {
+                provider.enabled && matches!(provider.kind, AiProviderKind::LocalOllama)
+            })
+            .cloned()
+            .collect();
+
+        if providers.is_empty() {
+            return;
+        }
+
+        thread::spawn(move || {
+            let client = BlockingAiHttp::default();
+            for provider in providers {
+                match warm_ollama_manifest(&client, &provider) {
+                    Ok(model_count) => {
+                        debug!(
+                            provider = %provider.name,
+                            models = model_count,
+                            "ollama manifest warmed"
+                        );
+                    }
+                    Err(err) => {
+                        debug!(
+                            provider = %provider.name,
+                            error = %err,
+                            "ollama manifest warm-up failed"
+                        );
+                    }
+                }
+            }
+        });
+    }
+
     /// Construct a launcher using explicit settings.
     pub fn from_settings(settings: LaunchSettings) -> Result<Self> {
         Self::from_settings_with_config(settings, None)
@@ -75,7 +165,7 @@ impl Launcher {
         let ai_host = AiHost::from_settings(&settings.ai_host)?;
         let crypto = CryptoStack::from_settings(&settings.crypto);
         let ghostdns = GhostDns::from_settings(&settings.ghostdns)?;
-        let mcp = McpOrchestrator::from_settings(&settings.mcp);
+        let mcp = McpOrchestrator::from_settings(settings.mcp.clone());
         let palette = ThemeRegistry::load(&settings.ui.theme, config_dir.as_deref())
             .unwrap_or_else(|err| {
                 warn!(error = %err, "Falling back to default theme palette");
@@ -113,20 +203,41 @@ impl Launcher {
 
     /// Load configuration from default path and bootstrap launcher.
     pub fn bootstrap(config_path_override: Option<std::path::PathBuf>) -> Result<Self> {
+        let mut startup = StartupTimeline::new();
+
         let config_path = match config_path_override {
             Some(path) => path,
             None => default_config_path()?,
         };
+        startup.record("resolve_config_path");
+
         let mut settings = LaunchSettings::load_or_default(&config_path)?;
+        startup.record("load_settings");
+
         let config_dir = config_path.parent().map(|path| path.to_path_buf());
 
         if !settings.first_run_complete {
             Self::run_first_run_wizard(&mut settings, &config_path)?;
+            startup.record("first_run_wizard");
         }
 
         ThemeRegistry::ensure_installed(&settings.ui.theme, config_dir.as_deref())?;
+        startup.record("ensure_theme_assets");
 
-        Self::from_settings_with_config(settings, config_dir)
+        let launcher = Self::from_settings_with_config(settings, config_dir)?;
+        startup.record("initialise_launcher");
+
+        let total_ms = startup.total_ms();
+        let stages = startup.into_stages();
+        info!(
+            target = "archon::startup",
+            total_ms = total_ms as u64,
+            stages = ?stages,
+            "launcher bootstrap completed"
+        );
+
+        launcher.spawn_startup_tasks();
+        Ok(launcher)
     }
 
     fn ensure_ai_host_running(&self) -> Result<()> {

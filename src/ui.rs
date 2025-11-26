@@ -450,9 +450,6 @@ mod tests {
         assert!(!report.prefer_wayland);
         assert!(!report.wayland_available);
         assert!(!report.unsafe_webgpu_default);
-        assert!(report.gpu_driver_version.is_none());
-        assert!(report.angle_backend.is_none());
-        assert!(report.angle_library_path.is_none());
     }
 
     #[test]

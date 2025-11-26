@@ -1,18 +1,47 @@
+x-archon-build: &archon-build
+  context: ..
+  dockerfile: dev/Dockerfile
+  network: host
+  args:
+    UID: ${UID:-1000}
+    GID: ${GID:-1000}
+    USER: ${USER_NAME:-archon}
+
+x-archon-volumes: &archon-volumes
+  - ..:/workspace:cached
+  - cargo-target:/workspace/target
+  - cargo-registry:/home/${USER_NAME:-archon}/.cargo/registry
+  - cargo-git:/home/${USER_NAME:-archon}/.cargo/git
+
 services:
-  archon:
-    build: .
-    container_name: archon
-    restart: unless-stopped
+  archon-dev:
+    build: *archon-build
+    image: archon-dev:latest
+    container_name: archon-dev
+    working_dir: /workspace
+    command: sleep infinity
+    tty: true
+    network_mode: host
     environment:
-      - RUNNER_ALLOW_RUNASROOT=1
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    runtime: nvidia
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      
+      - RUST_BACKTRACE=1
+      - RUST_LOG=debug
+    volumes: *archon-volumes
+
+  archon-host:
+    build: *archon-build
+    image: archon-dev:latest
+    working_dir: /workspace
+    command: cargo run --bin archon-host -- --listen 0.0.0.0:8787 --verbose --config dev/configs/gemini.json
+    environment:
+      - RUST_BACKTRACE=1
+      - RUST_LOG=info
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    network_mode: host
+    volumes: *archon-volumes
+    depends_on:
+      - archon-dev
+
+volumes:
+  cargo-target:
+  cargo-registry:
+  cargo-git:

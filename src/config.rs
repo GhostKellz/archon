@@ -72,6 +72,8 @@ pub enum AiProviderKind {
     Gemini,
     #[serde(rename = "xai")]
     Xai,
+    #[serde(rename = "perplexity")]
+    Perplexity,
 }
 
 impl AiProviderKind {
@@ -82,6 +84,7 @@ impl AiProviderKind {
                 | AiProviderKind::Claude
                 | AiProviderKind::Gemini
                 | AiProviderKind::Xai
+                | AiProviderKind::Perplexity
         )
     }
 }
@@ -100,6 +103,7 @@ impl std::fmt::Display for AiProviderKind {
             AiProviderKind::Claude => write!(f, "claude"),
             AiProviderKind::Gemini => write!(f, "gemini"),
             AiProviderKind::Xai => write!(f, "xai"),
+            AiProviderKind::Perplexity => write!(f, "perplexity"),
         }
     }
 }
@@ -366,6 +370,7 @@ impl AiSettings {
             AiProviderConfig::claude_default(),
             AiProviderConfig::gemini_default(),
             AiProviderConfig::xai_default(),
+            AiProviderConfig::perplexity_default(),
         ]
     }
 }
@@ -507,6 +512,27 @@ impl AiProviderConfig {
                 audio: false,
             },
             api_version: Some("2023-06-01".into()),
+            organization: None,
+            project: None,
+            temperature: Some(0.2),
+            enabled: false,
+        }
+    }
+
+    fn perplexity_default() -> Self {
+        Self {
+            name: "perplexity".into(),
+            label: Some("Perplexity".into()),
+            kind: AiProviderKind::Perplexity,
+            endpoint: "https://api.perplexity.ai".into(),
+            default_model: Some("sonar".into()),
+            api_key_env: Some("PERPLEXITY_API_KEY".into()),
+            chat_path: Some("chat/completions".into()),
+            capabilities: AiProviderCapabilities {
+                vision: false,
+                audio: false,
+            },
+            api_version: None,
             organization: None,
             project: None,
             temperature: Some(0.2),
