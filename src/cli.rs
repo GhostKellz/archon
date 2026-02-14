@@ -80,6 +80,22 @@ pub struct Cli {
     #[arg(long, value_name = "NAME")]
     pub chat_provider: Option<String>,
 
+    /// Perform an Arc web search with AI-grounded response and exit.
+    #[arg(long, value_name = "QUERY")]
+    pub search: Option<String>,
+
+    /// List N8N workflows from the configured instance and exit.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub n8n_list: bool,
+
+    /// Trigger an N8N workflow by ID and exit.
+    #[arg(long, value_name = "WORKFLOW_ID")]
+    pub n8n_trigger: Option<String>,
+
+    /// Check N8N instance health and exit.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub n8n_health: bool,
+
     /// Generate the GhostDNS configuration file and exit.
     #[arg(long, action = ArgAction::SetTrue)]
     pub write_ghostdns_config: bool,
@@ -918,6 +934,77 @@ pub fn run() -> Result<()> {
             println!("Transcript: {}", summary.title);
             println!("  JSON : {}", json_path.display());
             println!("  Markdown : {}", markdown_path.display());
+        }
+        return Ok(());
+    }
+
+    if let Some(query) = cli.search.clone() {
+        if query.trim().is_empty() {
+            bail!("--search requires a query");
+        }
+        if !launcher.arc().is_enabled() {
+            bail!("Arc search is not enabled; configure arc settings in config.json");
+        }
+        println!("Searching: {query}");
+        let result = launcher.arc_search(&query)?;
+        println!("\n{}\n", result.context.trim());
+        if !result.citations.is_empty() {
+            println!("Sources:");
+            for (i, citation) in result.citations.iter().enumerate() {
+                println!("  [{}] {} - {}", i + 1, citation.title, citation.url);
+            }
+        }
+        return Ok(());
+    }
+
+    if cli.n8n_health {
+        let statuses = launcher.n8n().health_report();
+        println!("N8N Health Report");
+        println!("  enabled: {}", launcher.n8n().is_enabled());
+        if statuses.is_empty() {
+            println!("  No instances configured.");
+        } else {
+            for health in &statuses {
+                let status = if health.healthy { "healthy" } else { "unhealthy" };
+                println!("  {} : {} ({})", health.instance, status, health.url);
+                if let Some(version) = &health.version {
+                    println!("    version: {version}");
+                }
+                if let Some(err) = &health.error {
+                    println!("    error: {err}");
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    if cli.n8n_list {
+        if !launcher.n8n().is_enabled() {
+            bail!("N8N is not enabled; configure n8n settings in config.json");
+        }
+        let workflows = launcher.n8n_workflows()?;
+        if workflows.is_empty() {
+            println!("No workflows found.");
+        } else {
+            println!("N8N Workflows ({} total):", workflows.len());
+            for workflow in workflows {
+                let status = if workflow.active { "active" } else { "inactive" };
+                println!("  {} : {} [{}]", workflow.id, workflow.name, status);
+            }
+        }
+        return Ok(());
+    }
+
+    if let Some(workflow_id) = cli.n8n_trigger.clone() {
+        if !launcher.n8n().is_enabled() {
+            bail!("N8N is not enabled; configure n8n settings in config.json");
+        }
+        println!("Triggering workflow: {workflow_id}");
+        let result = launcher.n8n_trigger(&workflow_id)?;
+        println!("Execution ID: {}", result.execution_id);
+        println!("Status: {}", result.status);
+        if let Some(data) = result.data {
+            println!("Output: {}", serde_json::to_string_pretty(&data)?);
         }
         return Ok(());
     }

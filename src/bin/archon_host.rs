@@ -19,6 +19,8 @@ use archon::config::{
 use archon::crypto::CryptoStack;
 use archon::host::AiHost;
 use archon::mcp::{McpOrchestrator, McpToolCallResponse};
+use archon::n8n::{N8nOrchestrator, N8nTriggerResult, N8nWebhookResult};
+use archon::search::ArcOrchestrator;
 use archon::telemetry::ServiceTelemetry;
 use archon::transcript::{TranscriptSource, TranscriptStore};
 use axum::{
@@ -76,6 +78,8 @@ struct Args {
 struct AppState {
     bridge: Arc<AiBridge>,
     mcp: Arc<McpOrchestrator>,
+    n8n: Arc<N8nOrchestrator>,
+    arc: Arc<ArcOrchestrator>,
     transcripts: Arc<TranscriptStore>,
     crypto: Arc<CryptoStack>,
     provider_health: Arc<Mutex<HashMap<String, ProviderHealthSnapshot>>>,
@@ -138,6 +142,8 @@ struct NativeResponse {
     transcripts: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     metrics: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    arc_result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -593,6 +599,48 @@ async fn main() -> Result<()> {
         };
     let crypto = Arc::new(CryptoStack::from_settings(&settings.crypto));
 
+    // Initialize N8N orchestrator
+    let n8n_settings = settings.n8n.clone();
+    let n8n =
+        match tokio::task::spawn_blocking(move || N8nOrchestrator::from_settings(n8n_settings))
+            .await
+        {
+            Ok(orchestrator) => Arc::new(orchestrator),
+            Err(err) => {
+                let error = anyhow::anyhow!(err).context("failed to initialise N8N orchestrator");
+                telemetry.record_error(&error);
+                return Err(error);
+            }
+        };
+
+    if n8n.is_enabled() {
+        info!(
+            instances = ?n8n.instances(),
+            "initialized N8N orchestrator"
+        );
+    }
+
+    // Initialize Arc search orchestrator
+    let arc_settings = settings.arc.clone();
+    let arc =
+        match tokio::task::spawn_blocking(move || ArcOrchestrator::from_settings(arc_settings))
+            .await
+        {
+            Ok(orchestrator) => Arc::new(orchestrator),
+            Err(err) => {
+                let error = anyhow::anyhow!(err).context("failed to initialise Arc search orchestrator");
+                telemetry.record_error(&error);
+                return Err(error);
+            }
+        };
+
+    if arc.is_enabled() {
+        info!(
+            providers = ?arc.providers(),
+            "initialized Arc search orchestrator"
+        );
+    }
+
     let outcome = match ai_host.write_default_config(&settings.ai, &settings.mcp, args.force) {
         Ok(outcome) => outcome,
         Err(err) => {
@@ -644,6 +692,7 @@ async fn main() -> Result<()> {
         let result = run_stdio(
             Arc::clone(&bridge),
             Arc::clone(&mcp),
+            Arc::clone(&arc),
             Arc::clone(&transcripts),
             Arc::clone(&crypto),
         )
@@ -673,6 +722,8 @@ async fn main() -> Result<()> {
     let state = AppState {
         bridge,
         mcp,
+        n8n,
+        arc,
         transcripts,
         crypto,
         provider_health,
@@ -682,6 +733,8 @@ async fn main() -> Result<()> {
         .route("/metrics", get(metrics_handler))
         .route("/providers", get(providers_handler))
         .route("/chat", post(chat_handler))
+        .route("/summarize", post(summarize_handler))
+        .route("/vision", post(vision_handler))
         .route("/chat/stream", post(chat_stream_handler))
         .route("/connectors", get(connectors_handler))
         .route("/tool-call", post(tool_call_handler))
@@ -693,6 +746,17 @@ async fn main() -> Result<()> {
             "/transcripts/:id/markdown",
             get(transcript_markdown_handler),
         )
+        // N8N workflow automation endpoints
+        .route("/n8n/health", get(n8n_health_handler))
+        .route("/n8n/workflows", get(n8n_workflows_handler))
+        .route("/n8n/trigger", post(n8n_trigger_handler))
+        .route("/n8n/executions/:id", get(n8n_execution_handler))
+        .route("/n8n/webhook/*path", post(n8n_webhook_handler))
+        // Arc search endpoints (Perplexity-like)
+        .route("/arc/health", get(arc_health_handler))
+        .route("/arc/search", post(arc_search_handler))
+        .route("/arc/ask", post(arc_ask_handler))
+        .route("/arc/ask/stream", post(arc_ask_stream_handler))
         .with_state(state);
 
     let listener = match TcpListener::bind(listen_addr)
@@ -722,6 +786,7 @@ async fn main() -> Result<()> {
 async fn run_stdio(
     bridge: Arc<AiBridge>,
     mcp: Arc<McpOrchestrator>,
+    arc: Arc<ArcOrchestrator>,
     transcripts: Arc<TranscriptStore>,
     _crypto: Arc<CryptoStack>,
 ) -> Result<()> {
@@ -759,6 +824,7 @@ async fn run_stdio(
                     providers: None,
                     transcripts: None,
                     metrics: None,
+                    arc_result: None,
                     error: Some(format!("invalid request payload: {err}")),
                 };
                 write_native_message(&mut stdout, &response).await?;
@@ -813,6 +879,7 @@ async fn run_stdio(
                     providers: None,
                     transcripts: None,
                     metrics: None,
+                    arc_result: None,
                     error: None,
                 };
                 write_native_message(&mut stdout, &response).await?;
@@ -855,6 +922,7 @@ async fn run_stdio(
                     providers: Some(payload),
                     transcripts: None,
                     metrics: Some(json!(metrics)),
+                    arc_result: None,
                     error: None,
                 };
                 write_native_message(&mut stdout, &response).await?;
@@ -871,6 +939,7 @@ async fn run_stdio(
                     providers: None,
                     transcripts: None,
                     metrics: Some(payload),
+                    arc_result: None,
                     error: None,
                 };
                 write_native_message(&mut stdout, &response).await?;
@@ -888,6 +957,7 @@ async fn run_stdio(
                             providers: None,
                             transcripts: None,
                             metrics: None,
+                            arc_result: None,
                             error: Some(format!("invalid tool payload: {err}")),
                         };
                         write_native_message(&mut stdout, &response).await?;
@@ -905,6 +975,7 @@ async fn run_stdio(
                         providers: None,
                         transcripts: None,
                         metrics: None,
+                        arc_result: None,
                         error: Some("connector and tool are required".into()),
                     };
                     write_native_message(&mut stdout, &response).await?;
@@ -933,6 +1004,7 @@ async fn run_stdio(
                         providers: None,
                         transcripts: None,
                         metrics: None,
+                        arc_result: None,
                         error: None,
                     },
                     Err(err) => {
@@ -946,6 +1018,7 @@ async fn run_stdio(
                             providers: None,
                             transcripts: None,
                             metrics: None,
+                            arc_result: None,
                             error: Some(err.to_string()),
                         }
                     }
@@ -970,6 +1043,7 @@ async fn run_stdio(
                         providers: None,
                         transcripts: Some(json!({ "transcripts": list })),
                         metrics: None,
+                        arc_result: None,
                         error: None,
                     },
                     Err(err) => {
@@ -983,6 +1057,7 @@ async fn run_stdio(
                             providers: None,
                             transcripts: None,
                             metrics: None,
+                            arc_result: None,
                             error: Some("failed to list transcripts".into()),
                         }
                     }
@@ -1002,6 +1077,7 @@ async fn run_stdio(
                         providers: None,
                         transcripts: None,
                         metrics: None,
+                        arc_result: None,
                         error: Some("transcript id is required".into()),
                     };
                     write_native_message(&mut stdout, &response).await?;
@@ -1020,6 +1096,7 @@ async fn run_stdio(
                             providers: None,
                             transcripts: None,
                             metrics: None,
+                            arc_result: None,
                             error: Some("invalid transcript id".into()),
                         };
                         write_native_message(&mut stdout, &response).await?;
@@ -1048,6 +1125,7 @@ async fn run_stdio(
                         providers: None,
                         transcripts: Some(json!({ "id": id_str, "json": value })),
                         metrics: None,
+                        arc_result: None,
                         error: None,
                     },
                     Err(err) => {
@@ -1061,6 +1139,7 @@ async fn run_stdio(
                             providers: None,
                             transcripts: None,
                             metrics: None,
+                            arc_result: None,
                             error: Some("failed to load transcript JSON".into()),
                         }
                     }
@@ -1080,6 +1159,7 @@ async fn run_stdio(
                         providers: None,
                         transcripts: None,
                         metrics: None,
+                        arc_result: None,
                         error: Some("transcript id is required".into()),
                     };
                     write_native_message(&mut stdout, &response).await?;
@@ -1098,6 +1178,7 @@ async fn run_stdio(
                             providers: None,
                             transcripts: None,
                             metrics: None,
+                            arc_result: None,
                             error: Some("invalid transcript id".into()),
                         };
                         write_native_message(&mut stdout, &response).await?;
@@ -1121,6 +1202,7 @@ async fn run_stdio(
                         providers: None,
                         transcripts: Some(json!({ "id": id_str, "markdown": contents })),
                         metrics: None,
+                        arc_result: None,
                         error: None,
                     },
                     Err(err) => {
@@ -1134,11 +1216,171 @@ async fn run_stdio(
                             providers: None,
                             transcripts: None,
                             metrics: None,
+                            arc_result: None,
                             error: Some("failed to load transcript markdown".into()),
                         }
                     }
                 };
 
+                write_native_message(&mut stdout, &response).await?;
+            }
+            Some("arc_ask") => {
+                // Arc search (Perplexity-like) via native messaging
+                let question = message
+                    .get("question")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string())
+                    .unwrap_or_default();
+
+                if question.trim().is_empty() {
+                    let response = NativeResponse {
+                        success: false,
+                        kind: Some("arc_ask".into()),
+                        data: None,
+                        tool: None,
+                        connectors: None,
+                        providers: None,
+                        transcripts: None,
+                        metrics: None,
+                        arc_result: None,
+                        error: Some("question must not be empty".into()),
+                    };
+                    write_native_message(&mut stdout, &response).await?;
+                    continue;
+                }
+
+                let ai_provider = message
+                    .get("ai_provider")
+                    .and_then(|value| value.as_str())
+                    .map(|value| value.to_string());
+
+                if !arc.is_enabled() {
+                    let response = NativeResponse {
+                        success: false,
+                        kind: Some("arc_ask".into()),
+                        data: None,
+                        tool: None,
+                        connectors: None,
+                        providers: None,
+                        transcripts: None,
+                        metrics: None,
+                        arc_result: None,
+                        error: Some("Arc search is not enabled".into()),
+                    };
+                    write_native_message(&mut stdout, &response).await?;
+                    continue;
+                }
+
+                // Step 1: Perform web search
+                let arc_clone = arc.clone();
+                let question_clone = question.clone();
+
+                let search_result = task::spawn_blocking(move || {
+                    arc_clone.grounded_search(&question_clone)
+                })
+                .await
+                .map_err(|err| anyhow::anyhow!(err).context("worker task panicked"))?;
+
+                let search_result = match search_result {
+                    Ok(result) => result,
+                    Err(err) => {
+                        error!(error = %err, "Arc search failed");
+                        let response = NativeResponse {
+                            success: false,
+                            kind: Some("arc_ask".into()),
+                            data: None,
+                            tool: None,
+                            connectors: None,
+                            providers: None,
+                            transcripts: None,
+                            metrics: None,
+                            arc_result: None,
+                            error: Some(format!("Arc search failed: {err}")),
+                        };
+                        write_native_message(&mut stdout, &response).await?;
+                        continue;
+                    }
+                };
+
+                // Step 2: Build augmented prompt with search context
+                let arc_prompt = arc.system_prompt().to_string();
+                let augmented_prompt = format!(
+                    "{}\n\n{}\n\nQuestion: {}",
+                    arc_prompt, search_result.context, question
+                );
+
+                // Step 3: Send to AI for response
+                let bridge_clone = bridge.clone();
+                let provider = ai_provider.clone();
+
+                let chat_prompt = AiChatPrompt::text(&augmented_prompt)
+                    .with_source(TranscriptSource::ArcSearch);
+
+                let ai_response = task::spawn_blocking(move || {
+                    let http = BlockingAiHttp::default();
+                    bridge_clone.chat_with_prompt(provider.as_deref(), chat_prompt, &http)
+                })
+                .await
+                .map_err(|err| anyhow::anyhow!(err).context("worker task panicked"))?;
+
+                let ai_response = match ai_response {
+                    Ok(reply) => reply,
+                    Err(err) => {
+                        error!(error = %err, "AI chat failed for Arc search");
+                        let response = NativeResponse {
+                            success: false,
+                            kind: Some("arc_ask".into()),
+                            data: None,
+                            tool: None,
+                            connectors: None,
+                            providers: None,
+                            transcripts: None,
+                            metrics: None,
+                            arc_result: None,
+                            error: Some(format!("AI response failed: {err}")),
+                        };
+                        write_native_message(&mut stdout, &response).await?;
+                        continue;
+                    }
+                };
+
+                // Step 4: Format response with citations
+                let citations_footer = archon::search::format_citations_footer(&search_result.citations);
+                let full_response = format!("{}{}", ai_response.reply, citations_footer);
+
+                info!(
+                    question = %question,
+                    ai_provider = %ai_response.provider,
+                    search_provider = %search_result.provider,
+                    "Arc search completed via stdio"
+                );
+
+                let arc_result_payload = json!({
+                    "question": question,
+                    "answer": full_response,
+                    "raw_answer": ai_response.reply,
+                    "citations": search_result.citations,
+                    "sources": search_result.results,
+                    "search_provider": search_result.provider,
+                    "ai_provider": ai_response.provider,
+                    "ai_model": ai_response.model,
+                    "search_latency_ms": search_result.latency_ms,
+                    "ai_latency_ms": ai_response.latency_ms,
+                    "conversation_id": ai_response.conversation_id,
+                });
+
+                let response = NativeResponse {
+                    success: true,
+                    kind: Some("arc_ask".into()),
+                    data: None,
+                    tool: None,
+                    connectors: None,
+                    providers: None,
+                    transcripts: None,
+                    metrics: None,
+                    arc_result: Some(arc_result_payload),
+                    error: None,
+                };
                 write_native_message(&mut stdout, &response).await?;
             }
             _ => {
@@ -1154,6 +1396,7 @@ async fn run_stdio(
                             providers: None,
                             transcripts: None,
                             metrics: None,
+                            arc_result: None,
                             error: Some(format!("invalid chat payload: {err}")),
                         };
                         write_native_message(&mut stdout, &response).await?;
@@ -1174,6 +1417,7 @@ async fn run_stdio(
                             providers: None,
                             transcripts: None,
                             metrics: None,
+                            arc_result: None,
                             error: Some(err.to_string()),
                         };
                         write_native_message(&mut stdout, &response).await?;
@@ -1184,17 +1428,17 @@ async fn run_stdio(
                 let bridge_clone = bridge.clone();
                 let mut prompt_clone = prompt.clone();
 
-                if prompt_clone.history.is_empty() {
-                    if let Some(conversation_id) = prompt_clone.conversation_id {
-                        match bridge_clone.conversation_history(conversation_id) {
-                            Ok(history) => {
-                                if !history.is_empty() {
-                                    prompt_clone.history = history;
-                                }
+                if prompt_clone.history.is_empty()
+                    && let Some(conversation_id) = prompt_clone.conversation_id
+                {
+                    match bridge_clone.conversation_history(conversation_id) {
+                        Ok(history) => {
+                            if !history.is_empty() {
+                                prompt_clone.history = history;
                             }
-                            Err(err) => {
-                                warn!(error = %err, conversation = %conversation_id, "failed to load transcript history for native chat request");
-                            }
+                        }
+                        Err(err) => {
+                            warn!(error = %err, conversation = %conversation_id, "failed to load transcript history for native chat request");
                         }
                     }
                 }
@@ -1217,6 +1461,7 @@ async fn run_stdio(
                         providers: None,
                         transcripts: None,
                         metrics: None,
+                        arc_result: None,
                         error: None,
                     },
                     Err(err) => {
@@ -1230,6 +1475,7 @@ async fn run_stdio(
                             providers: None,
                             transcripts: None,
                             metrics: None,
+                            arc_result: None,
                             error: Some(err.to_string()),
                         }
                     }
@@ -1359,21 +1605,21 @@ fn prepare_chat_prompt(
         .into_prompt()
         .map_err(|err| ApiError::bad_request(err.to_string()))?;
 
-    if prompt.history.is_empty() {
-        if let Some(conversation_id) = prompt.conversation_id {
-            let cached_id = conversation_id;
-            match bridge.conversation_history(cached_id) {
-                Ok(history) => {
-                    if !history.is_empty() {
-                        prompt.history = history;
-                    }
-                }
-                Err(err) => {
-                    warn!(error = %err, conversation = %cached_id, "failed to load transcript history for chat request");
+    if prompt.history.is_empty()
+        && let Some(conversation_id) = prompt.conversation_id
+    {
+        let cached_id = conversation_id;
+        match bridge.conversation_history(cached_id) {
+            Ok(history) => {
+                if !history.is_empty() {
+                    prompt.history = history;
                 }
             }
-            prompt.conversation_id = Some(cached_id);
+            Err(err) => {
+                warn!(error = %err, conversation = %cached_id, "failed to load transcript history for chat request");
+            }
         }
+        prompt.conversation_id = Some(cached_id);
     }
 
     Ok((provider, prompt))
@@ -1402,6 +1648,193 @@ async fn chat_handler(
     })?;
 
     Ok(Json(response))
+}
+
+#[derive(Debug, Deserialize)]
+struct SummarizeRequest {
+    /// URL or raw text content to summarize
+    content: String,
+    /// Summary style: "brief", "detailed", "bullets", "tldr"
+    #[serde(default)]
+    style: Option<String>,
+    /// Optional provider override
+    #[serde(default)]
+    provider: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct SummarizeResponse {
+    summary: String,
+    key_points: Vec<String>,
+    provider: String,
+    model: String,
+    latency_ms: u64,
+}
+
+/// Summarize text or URL content.
+async fn summarize_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<SummarizeRequest>,
+) -> Result<Json<SummarizeResponse>, ApiError> {
+    if payload.content.trim().is_empty() {
+        return Err(ApiError::bad_request("content must not be empty"));
+    }
+
+    let style = payload.style.as_deref().unwrap_or("brief");
+    let instruction = match style {
+        "detailed" => "Provide a comprehensive summary of the following content, covering all major points and details.",
+        "bullets" => "Summarize the following content as a bulleted list of key points. Use - for each bullet.",
+        "tldr" => "Provide a very brief TL;DR summary in 1-2 sentences.",
+        _ => "Provide a clear, concise summary of the following content.",
+    };
+
+    let user_prompt = format!(
+        "{}\n\n---\n\n{}",
+        instruction,
+        payload.content
+    );
+
+    let bridge = Arc::clone(&state.bridge);
+    let provider = payload.provider.clone();
+
+    let chat_prompt = AiChatPrompt::text(&user_prompt)
+        .with_source(TranscriptSource::Sidebar);
+
+    let response = task::spawn_blocking(move || {
+        let http = BlockingAiHttp::default();
+        bridge.chat_with_prompt(provider.as_deref(), chat_prompt, &http)
+    })
+    .await
+    .map_err(|err| {
+        error!(?err, "blocking task panicked during summarization");
+        ApiError::internal("summarization task failed")
+    })?
+    .map_err(|err| {
+        error!(error = %err, "summarization failed");
+        ApiError::bad_request(err.to_string())
+    })?;
+
+    // Extract key points from bullet-style responses
+    let key_points: Vec<String> = if style == "bullets" {
+        response.reply
+            .lines()
+            .filter(|line| line.trim().starts_with('-') || line.trim().starts_with('•'))
+            .map(|line| line.trim().trim_start_matches(['-', '•', ' ']).to_string())
+            .collect()
+    } else {
+        // Try to extract any bullet points from the response
+        response.reply
+            .lines()
+            .filter(|line| line.trim().starts_with('-') || line.trim().starts_with('•'))
+            .take(5)
+            .map(|line| line.trim().trim_start_matches(['-', '•', ' ']).to_string())
+            .collect()
+    };
+
+    info!(
+        style = %style,
+        provider = %response.provider,
+        latency_ms = response.latency_ms,
+        "summarization completed"
+    );
+
+    Ok(Json(SummarizeResponse {
+        summary: response.reply,
+        key_points,
+        provider: response.provider,
+        model: response.model,
+        latency_ms: response.latency_ms,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct VisionRequest {
+    /// Base64-encoded image data (without data URI prefix)
+    image: String,
+    /// MIME type of the image (e.g., "image/png", "image/jpeg")
+    #[serde(default = "default_mime_type")]
+    mime_type: String,
+    /// Optional prompt/question about the image
+    #[serde(default)]
+    prompt: Option<String>,
+    /// Optional provider override (must support vision)
+    #[serde(default)]
+    provider: Option<String>,
+}
+
+fn default_mime_type() -> String {
+    "image/png".to_string()
+}
+
+#[derive(Debug, Serialize)]
+struct VisionResponse {
+    description: String,
+    provider: String,
+    model: String,
+    latency_ms: u64,
+}
+
+/// Analyze an image using a vision-capable AI model.
+async fn vision_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<VisionRequest>,
+) -> Result<Json<VisionResponse>, ApiError> {
+    use archon::ai::{AiAttachment, AiAttachmentKind, AiChatPrompt};
+
+    if payload.image.trim().is_empty() {
+        return Err(ApiError::bad_request("image data must not be empty"));
+    }
+
+    // Decode base64 to get raw bytes
+    let image_data = base64::engine::general_purpose::STANDARD
+        .decode(&payload.image)
+        .map_err(|e| ApiError::bad_request(format!("invalid base64: {e}")))?;
+
+    let prompt_text = payload.prompt.as_deref().unwrap_or(
+        "Describe what you see in this image. Be concise but thorough."
+    );
+
+    // Create attachment for the image
+    let attachment = AiAttachment {
+        kind: AiAttachmentKind::Image,
+        mime: payload.mime_type.clone(),
+        filename: None,
+        data: image_data,
+    };
+
+    let chat_prompt = AiChatPrompt::with_attachments(prompt_text, vec![attachment])
+        .with_source(TranscriptSource::Sidebar);
+
+    let bridge = Arc::clone(&state.bridge);
+    let provider = payload.provider.clone();
+
+    let response = task::spawn_blocking(move || {
+        let http = BlockingAiHttp::default();
+        bridge.chat_with_prompt(provider.as_deref(), chat_prompt, &http)
+    })
+    .await
+    .map_err(|err| {
+        error!(?err, "blocking task panicked during vision analysis");
+        ApiError::internal("vision analysis task failed")
+    })?
+    .map_err(|err| {
+        error!(error = %err, "vision analysis failed");
+        ApiError::bad_request(err.to_string())
+    })?;
+
+    info!(
+        provider = %response.provider,
+        model = %response.model,
+        latency_ms = response.latency_ms,
+        "vision analysis completed"
+    );
+
+    Ok(Json(VisionResponse {
+        description: response.reply,
+        provider: response.provider,
+        model: response.model,
+        latency_ms: response.latency_ms,
+    }))
 }
 
 async fn chat_stream_handler(
@@ -1686,4 +2119,580 @@ async fn tool_call_handler(
         })?;
 
     Ok(Json(response))
+}
+
+// ============================================================================
+// N8N Workflow Automation Handlers
+// ============================================================================
+
+/// Health check for N8N integration.
+async fn n8n_health_handler(State(state): State<AppState>) -> Json<Value> {
+    let n8n = state.n8n.clone();
+
+    let health_result = task::spawn_blocking(move || n8n.health_report()).await;
+
+    match health_result {
+        Ok(report) => {
+            let instances: Vec<Value> = report
+                .iter()
+                .map(|status| {
+                    json!({
+                        "instance": status.instance,
+                        "url": status.url,
+                        "healthy": status.healthy,
+                        "latency_ms": status.latency_ms,
+                        "version": status.version,
+                        "error": status.error,
+                    })
+                })
+                .collect();
+
+            Json(json!({
+                "enabled": state.n8n.is_enabled(),
+                "instances": instances,
+            }))
+        }
+        Err(err) => {
+            error!(?err, "failed to get N8N health report");
+            Json(json!({
+                "enabled": state.n8n.is_enabled(),
+                "error": "failed to get health report",
+            }))
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct N8nWorkflowsQuery {
+    #[serde(default)]
+    instance: Option<String>,
+}
+
+/// List workflows from an N8N instance.
+async fn n8n_workflows_handler(
+    State(state): State<AppState>,
+    Query(query): Query<N8nWorkflowsQuery>,
+) -> Result<Json<Value>, ApiError> {
+    if !state.n8n.is_enabled() {
+        return Err(ApiError::bad_request("N8N integration is not enabled"));
+    }
+
+    let n8n = state.n8n.clone();
+    let instance = query.instance.clone();
+
+    let workflows = task::spawn_blocking(move || n8n.list_workflows(instance.as_deref()))
+        .await
+        .map_err(|err| {
+            error!(?err, "blocking task panicked");
+            ApiError::internal("worker task failed")
+        })?
+        .map_err(|err| {
+            warn!(error = %err, "failed to list N8N workflows");
+            ApiError::bad_request(err.to_string())
+        })?;
+
+    let workflow_list: Vec<Value> = workflows
+        .iter()
+        .map(|wf| {
+            json!({
+                "id": wf.id,
+                "name": wf.name,
+                "active": wf.active,
+                "tags": wf.tags.iter().map(|t| &t.name).collect::<Vec<_>>(),
+                "created_at": wf.created_at,
+                "updated_at": wf.updated_at,
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({
+        "workflows": workflow_list,
+        "count": workflows.len(),
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct N8nTriggerRequest {
+    workflow_id: String,
+    #[serde(default)]
+    inputs: Option<Value>,
+    #[serde(default)]
+    instance: Option<String>,
+}
+
+/// Trigger a workflow execution.
+async fn n8n_trigger_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<N8nTriggerRequest>,
+) -> Result<Json<N8nTriggerResult>, ApiError> {
+    if !state.n8n.is_enabled() {
+        return Err(ApiError::bad_request("N8N integration is not enabled"));
+    }
+
+    if payload.workflow_id.trim().is_empty() {
+        return Err(ApiError::bad_request("workflow_id must not be empty"));
+    }
+
+    let n8n = state.n8n.clone();
+    let workflow_id = payload.workflow_id.clone();
+    let inputs = payload.inputs.clone();
+    let instance = payload.instance.clone();
+
+    let result = task::spawn_blocking(move || {
+        n8n.trigger_workflow(&workflow_id, inputs, instance.as_deref())
+    })
+    .await
+    .map_err(|err| {
+        error!(?err, "blocking task panicked");
+        ApiError::internal("worker task failed")
+    })?
+    .map_err(|err| {
+        warn!(error = %err, workflow_id = %payload.workflow_id, "failed to trigger N8N workflow");
+        ApiError::bad_request(err.to_string())
+    })?;
+
+    info!(
+        workflow_id = %result.workflow_id,
+        execution_id = %result.execution_id,
+        latency_ms = result.latency_ms,
+        "triggered N8N workflow"
+    );
+
+    Ok(Json(result))
+}
+
+#[derive(Debug, Deserialize)]
+struct N8nExecutionQuery {
+    #[serde(default)]
+    instance: Option<String>,
+}
+
+/// Get execution status.
+async fn n8n_execution_handler(
+    State(state): State<AppState>,
+    Path(execution_id): Path<String>,
+    Query(query): Query<N8nExecutionQuery>,
+) -> Result<Json<Value>, ApiError> {
+    if !state.n8n.is_enabled() {
+        return Err(ApiError::bad_request("N8N integration is not enabled"));
+    }
+
+    let n8n = state.n8n.clone();
+    let id = execution_id.clone();
+    let instance = query.instance.clone();
+
+    let execution = task::spawn_blocking(move || n8n.get_execution(&id, instance.as_deref()))
+        .await
+        .map_err(|err| {
+            error!(?err, "blocking task panicked");
+            ApiError::internal("worker task failed")
+        })?
+        .map_err(|err| {
+            warn!(error = %err, execution_id = %execution_id, "failed to get N8N execution");
+            ApiError::bad_request(err.to_string())
+        })?;
+
+    Ok(Json(json!({
+        "id": execution.id,
+        "finished": execution.finished,
+        "mode": execution.mode,
+        "status": execution.status,
+        "started_at": execution.started_at,
+        "stopped_at": execution.stopped_at,
+        "workflow_id": execution.workflow_id,
+        "data": execution.data,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct N8nWebhookQuery {
+    #[serde(default)]
+    instance: Option<String>,
+    #[serde(default)]
+    test: Option<bool>,
+}
+
+/// Call an N8N webhook.
+async fn n8n_webhook_handler(
+    State(state): State<AppState>,
+    Path(path): Path<String>,
+    Query(query): Query<N8nWebhookQuery>,
+    Json(data): Json<Value>,
+) -> Result<Json<N8nWebhookResult>, ApiError> {
+    if !state.n8n.is_enabled() {
+        return Err(ApiError::bad_request("N8N integration is not enabled"));
+    }
+
+    let n8n = state.n8n.clone();
+    let webhook_path = path.clone();
+    let instance = query.instance.clone();
+    let is_test = query.test.unwrap_or(false);
+
+    let result = task::spawn_blocking(move || {
+        let client = n8n.client(instance.as_deref())?;
+        if is_test {
+            client.call_webhook_test(&webhook_path, data)
+        } else {
+            client.call_webhook(&webhook_path, data)
+        }
+    })
+    .await
+    .map_err(|err| {
+        error!(?err, "blocking task panicked");
+        ApiError::internal("worker task failed")
+    })?
+    .map_err(|err| {
+        warn!(error = %err, path = %path, "failed to call N8N webhook");
+        ApiError::bad_request(err.to_string())
+    })?;
+
+    info!(
+        path = %result.path,
+        status_code = result.status_code,
+        latency_ms = result.latency_ms,
+        "called N8N webhook"
+    );
+
+    Ok(Json(result))
+}
+
+// ============================================================================
+// Arc Search Handlers (Perplexity-like)
+// ============================================================================
+
+/// Health check for Arc search integration.
+async fn arc_health_handler(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({
+        "enabled": state.arc.is_enabled(),
+        "providers": state.arc.providers(),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct ArcSearchRequest {
+    query: String,
+    #[serde(default)]
+    #[allow(dead_code)]
+    provider: Option<String>,
+}
+
+/// Perform a web search and return results with citations.
+async fn arc_search_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<ArcSearchRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if !state.arc.is_enabled() {
+        return Err(ApiError::bad_request("Arc search is not enabled"));
+    }
+
+    if payload.query.trim().is_empty() {
+        return Err(ApiError::bad_request("query must not be empty"));
+    }
+
+    let arc = state.arc.clone();
+    let query = payload.query.clone();
+    let provider = payload.provider.clone();
+
+    let result = task::spawn_blocking(move || {
+        arc.grounded_search_with_provider(&query, provider.as_deref())
+    })
+        .await
+        .map_err(|err| {
+            error!(?err, "blocking task panicked");
+            ApiError::internal("worker task failed")
+        })?
+        .map_err(|err| {
+            warn!(error = %err, "Arc search failed");
+            ApiError::bad_request(err.to_string())
+        })?;
+
+    info!(
+        query = %result.query,
+        provider = %result.provider,
+        results = result.results.len(),
+        latency_ms = result.latency_ms,
+        "Arc search completed"
+    );
+
+    Ok(Json(json!({
+        "query": result.query,
+        "results": result.results,
+        "citations": result.citations,
+        "context": result.context,
+        "provider": result.provider,
+        "latency_ms": result.latency_ms,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct ArcAskRequest {
+    question: String,
+    /// Search provider (reserved for future use).
+    #[serde(default)]
+    #[allow(dead_code)]
+    search_provider: Option<String>,
+    #[serde(default)]
+    ai_provider: Option<String>,
+    #[serde(default)]
+    conversation_id: Option<Uuid>,
+}
+
+/// Ask a question with grounded search - combines search + AI response.
+/// This is the main Perplexity-like endpoint.
+async fn arc_ask_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<ArcAskRequest>,
+) -> Result<Json<Value>, ApiError> {
+    if !state.arc.is_enabled() {
+        return Err(ApiError::bad_request("Arc search is not enabled"));
+    }
+
+    if payload.question.trim().is_empty() {
+        return Err(ApiError::bad_request("question must not be empty"));
+    }
+
+    // Step 1: Perform web search
+    let arc = state.arc.clone();
+    let question = payload.question.clone();
+
+    let search_result = task::spawn_blocking(move || arc.grounded_search(&question))
+        .await
+        .map_err(|err| {
+            error!(?err, "blocking task panicked during search");
+            ApiError::internal("search task failed")
+        })?
+        .map_err(|err| {
+            warn!(error = %err, "Arc search failed");
+            ApiError::bad_request(err.to_string())
+        })?;
+
+    info!(
+        query = %search_result.query,
+        provider = %search_result.provider,
+        results = search_result.results.len(),
+        "Arc search completed, sending to AI"
+    );
+
+    // Step 2: Build augmented prompt with search context
+    let arc_prompt = state.arc.system_prompt().to_string();
+    let augmented_prompt = format!(
+        "{}\n\n{}\n\nQuestion: {}",
+        arc_prompt, search_result.context, payload.question
+    );
+
+    // Step 3: Send to AI for response
+    let bridge = state.bridge.clone();
+    let provider = payload.ai_provider.clone();
+    let conversation_id = payload.conversation_id;
+
+    let chat_prompt = AiChatPrompt::text(&augmented_prompt)
+        .with_conversation(conversation_id)
+        .with_source(TranscriptSource::ArcSearch);
+
+    let ai_response = task::spawn_blocking(move || {
+        let http = BlockingAiHttp::default();
+        bridge.chat_with_prompt(provider.as_deref(), chat_prompt, &http)
+    })
+    .await
+    .map_err(|err| {
+        error!(?err, "blocking task panicked during AI chat");
+        ApiError::internal("AI chat task failed")
+    })?
+    .map_err(|err| {
+        warn!(error = %err, "AI chat failed");
+        ApiError::internal(err.to_string())
+    })?;
+
+    // Step 4: Format response with citations
+    let citations_footer = archon::search::format_citations_footer(&search_result.citations);
+    let full_response = format!("{}{}", ai_response.reply, citations_footer);
+
+    info!(
+        question = %payload.question,
+        ai_provider = %ai_response.provider,
+        search_provider = %search_result.provider,
+        latency_ms = ai_response.latency_ms,
+        "Arc ask completed"
+    );
+
+    Ok(Json(json!({
+        "question": payload.question,
+        "answer": full_response,
+        "raw_answer": ai_response.reply,
+        "citations": search_result.citations,
+        "sources": search_result.results,
+        "search_provider": search_result.provider,
+        "ai_provider": ai_response.provider,
+        "ai_model": ai_response.model,
+        "search_latency_ms": search_result.latency_ms,
+        "ai_latency_ms": ai_response.latency_ms,
+        "conversation_id": ai_response.conversation_id,
+    })))
+}
+
+/// Streaming Arc ask handler - returns SSE stream with search status and AI response chunks.
+async fn arc_ask_stream_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<ArcAskRequest>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    if !state.arc.is_enabled() {
+        return Err(ApiError::bad_request("Arc search is not enabled"));
+    }
+
+    if payload.question.trim().is_empty() {
+        return Err(ApiError::bad_request("question must not be empty"));
+    }
+
+    let (tx, rx) = mpsc::channel::<Result<Event, String>>(64);
+    let arc = state.arc.clone();
+    let bridge = state.bridge.clone();
+    let question = payload.question.clone();
+    let ai_provider = payload.ai_provider.clone();
+
+    tokio::spawn(async move {
+        // Send searching status
+        let searching_event = Event::default()
+            .event("status")
+            .data(json!({ "stage": "searching", "message": "Searching the web..." }).to_string());
+        if tx.send(Ok(searching_event)).await.is_err() {
+            return;
+        }
+
+        // Step 1: Perform web search
+        let arc_clone = arc.clone();
+        let question_clone = question.clone();
+
+        let search_result = match task::spawn_blocking(move || {
+            arc_clone.grounded_search(&question_clone)
+        })
+        .await
+        {
+            Ok(Ok(result)) => result,
+            Ok(Err(err)) => {
+                let _ = tx
+                    .send(Err(format!("Search failed: {err}")))
+                    .await;
+                return;
+            }
+            Err(err) => {
+                let _ = tx
+                    .send(Err(format!("Search task panicked: {err}")))
+                    .await;
+                return;
+            }
+        };
+
+        // Send search results
+        let sources_event = Event::default()
+            .event("sources")
+            .data(json!({
+                "citations": search_result.citations,
+                "sources": search_result.results,
+                "search_provider": search_result.provider,
+                "search_latency_ms": search_result.latency_ms,
+            }).to_string());
+        if tx.send(Ok(sources_event)).await.is_err() {
+            return;
+        }
+
+        // Send thinking status
+        let thinking_event = Event::default()
+            .event("status")
+            .data(json!({ "stage": "thinking", "message": "Analyzing sources..." }).to_string());
+        if tx.send(Ok(thinking_event)).await.is_err() {
+            return;
+        }
+
+        // Step 2: Build augmented prompt
+        let arc_prompt = arc.system_prompt().to_string();
+        let augmented_prompt = format!(
+            "{}\n\n{}\n\nQuestion: {}",
+            arc_prompt, search_result.context, question
+        );
+
+        // Step 3: Send to AI for response
+        let chat_prompt = AiChatPrompt::text(&augmented_prompt)
+            .with_source(TranscriptSource::ArcSearch);
+
+        let ai_response = match task::spawn_blocking(move || {
+            let http = BlockingAiHttp::default();
+            bridge.chat_with_prompt(ai_provider.as_deref(), chat_prompt, &http)
+        })
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(err)) => {
+                let _ = tx
+                    .send(Err(format!("AI response failed: {err}")))
+                    .await;
+                return;
+            }
+            Err(err) => {
+                let _ = tx
+                    .send(Err(format!("AI task panicked: {err}")))
+                    .await;
+                return;
+            }
+        };
+
+        // Send streaming status
+        let streaming_event = Event::default()
+            .event("status")
+            .data(json!({ "stage": "streaming", "message": "Generating response..." }).to_string());
+        if tx.send(Ok(streaming_event)).await.is_err() {
+            return;
+        }
+
+        // Stream the response in chunks for a typing effect
+        for chunk in chunk_response_text(&ai_response.reply) {
+            let delta_event = Event::default()
+                .event("delta")
+                .data(json!({ "text": chunk }).to_string());
+            if tx.send(Ok(delta_event)).await.is_err() {
+                return;
+            }
+            // Small delay between chunks for typing effect
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        // Send complete event with full response data
+        let citations_footer = archon::search::format_citations_footer(&search_result.citations);
+        let full_response = format!("{}{}", ai_response.reply, citations_footer);
+
+        let complete_event = Event::default()
+            .event("complete")
+            .data(json!({
+                "question": question,
+                "answer": full_response,
+                "raw_answer": ai_response.reply,
+                "citations": search_result.citations,
+                "sources": search_result.results,
+                "search_provider": search_result.provider,
+                "ai_provider": ai_response.provider,
+                "ai_model": ai_response.model,
+                "search_latency_ms": search_result.latency_ms,
+                "ai_latency_ms": ai_response.latency_ms,
+                "conversation_id": ai_response.conversation_id,
+            }).to_string());
+        let _ = tx.send(Ok(complete_event)).await;
+
+        // Send finished status
+        let finished_event = Event::default()
+            .event("status")
+            .data(json!({ "stage": "finished" }).to_string());
+        let _ = tx.send(Ok(finished_event)).await;
+    });
+
+    let stream = ReceiverStream::new(rx).map(|result| match result {
+        Ok(event) => Ok(event),
+        Err(message) => Ok(Event::default()
+            .event("error")
+            .data(json!({ "message": message }).to_string())),
+    });
+
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    ))
 }

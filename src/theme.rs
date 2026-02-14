@@ -93,12 +93,43 @@ impl ThemeRegistry {
 
     fn builtin_raw(name: &str) -> Option<&'static str> {
         match Self::normalize(name).as_str() {
+            // Tokyo Night variants (default)
             "tokyonight" | "tokyo-night" => Some(include_str!("../assets/themes/tokyonight.json")),
+            "tokyonight-storm" | "tokyo-night-storm" => {
+                Some(include_str!("../assets/themes/tokyonight-storm.json"))
+            }
+            "tokyonight-moon" | "tokyo-night-moon" => {
+                Some(include_str!("../assets/themes/tokyonight-moon.json"))
+            }
+            // Dracula
+            "dracula" => Some(include_str!("../assets/themes/dracula.json")),
+            // Nord
+            "nord" => Some(include_str!("../assets/themes/nord.json")),
+            // Rosé Pine variants
+            "rosepine" | "rose-pine" => Some(include_str!("../assets/themes/rosepine.json")),
+            "rosepine-moon" | "rose-pine-moon" => {
+                Some(include_str!("../assets/themes/rosepine-moon.json"))
+            }
+            // Light theme
             "archon-light" | "archonlight" => {
                 Some(include_str!("../assets/themes/archon-light.json"))
             }
             _ => None,
         }
+    }
+
+    /// List all available built-in theme names.
+    pub fn builtin_themes() -> &'static [&'static str] {
+        &[
+            "tokyonight",
+            "tokyonight-storm",
+            "tokyonight-moon",
+            "dracula",
+            "nord",
+            "rosepine",
+            "rosepine-moon",
+            "archon-light",
+        ]
     }
 
     pub fn load(name: &str, config_dir: Option<&Path>) -> Result<ThemePalette> {

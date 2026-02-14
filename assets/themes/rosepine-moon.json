@@ -1,0 +1,31 @@
+{
+  "name": "rosepine-moon",
+  "label": "Rosé Pine Moon",
+  "version": "1.0.0",
+  "author": "Archon Project",
+  "description": "Rosé Pine's moonlit variant. Softer backgrounds with the same elegant rose and pine accents.",
+  "colors": {
+    "background": {
+      "dim": "#232136",
+      "surface": "#2a273f",
+      "floating": "#393552"
+    },
+    "foreground": {
+      "primary": "#e0def4",
+      "muted": "#908caa",
+      "subtle": "#6e6a86"
+    },
+    "accents": {
+      "primary": "#ea9a97",
+      "secondary": "#c4a7e7",
+      "mint": "#9ccfd8",
+      "ghost": "#56526e"
+    },
+    "status": {
+      "info": "#c4a7e7",
+      "success": "#9ccfd8",
+      "warning": "#f6c177",
+      "danger": "#eb6f92"
+    }
+  }
+}

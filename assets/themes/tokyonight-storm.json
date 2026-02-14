@@ -1,0 +1,31 @@
+{
+  "name": "tokyonight-storm",
+  "label": "Tokyo Night Storm",
+  "version": "1.0.0",
+  "author": "Archon Project",
+  "description": "A stormy variant of Tokyo Night with deeper blues and higher contrast. Perfect for late-night browsing.",
+  "colors": {
+    "background": {
+      "dim": "#1f2335",
+      "surface": "#24283b",
+      "floating": "#292e42"
+    },
+    "foreground": {
+      "primary": "#c0caf5",
+      "muted": "#a9b1d6",
+      "subtle": "#545c7e"
+    },
+    "accents": {
+      "primary": "#7aa2f7",
+      "secondary": "#7dcfff",
+      "mint": "#73daca",
+      "ghost": "#8089b3"
+    },
+    "status": {
+      "info": "#7aa2f7",
+      "success": "#9ece6a",
+      "warning": "#e0af68",
+      "danger": "#f7768e"
+    }
+  }
+}

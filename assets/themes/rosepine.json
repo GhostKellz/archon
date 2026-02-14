@@ -1,0 +1,31 @@
+{
+  "name": "rosepine",
+  "label": "Rosé Pine",
+  "version": "1.0.0",
+  "author": "Archon Project",
+  "description": "All natural pine, faux fur and a bit of soho vibes. Elegant dark theme with rose and gold accents.",
+  "colors": {
+    "background": {
+      "dim": "#191724",
+      "surface": "#1f1d2e",
+      "floating": "#26233a"
+    },
+    "foreground": {
+      "primary": "#e0def4",
+      "muted": "#908caa",
+      "subtle": "#6e6a86"
+    },
+    "accents": {
+      "primary": "#ebbcba",
+      "secondary": "#c4a7e7",
+      "mint": "#9ccfd8",
+      "ghost": "#524f67"
+    },
+    "status": {
+      "info": "#c4a7e7",
+      "success": "#9ccfd8",
+      "warning": "#f6c177",
+      "danger": "#eb6f92"
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "name": "tokyonight-moon",
+  "label": "Tokyo Night Moon",
+  "version": "1.0.0",
+  "author": "Archon Project",
+  "description": "A moonlit variant of Tokyo Night with softer purples and serene tones. Calming and easy on the eyes.",
+  "colors": {
+    "background": {
+      "dim": "#1e2030",
+      "surface": "#222436",
+      "floating": "#2f334d"
+    },
+    "foreground": {
+      "primary": "#c8d3f5",
+      "muted": "#b4befe",
+      "subtle": "#636da6"
+    },
+    "accents": {
+      "primary": "#82aaff",
+      "secondary": "#86e1fc",
+      "mint": "#c3e88d",
+      "ghost": "#828bb8"
+    },
+    "status": {
+      "info": "#82aaff",
+      "success": "#c3e88d",
+      "warning": "#ffc777",
+      "danger": "#ff757f"
+    }
+  }
+}

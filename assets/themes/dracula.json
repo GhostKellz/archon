@@ -1,0 +1,31 @@
+{
+  "name": "dracula",
+  "label": "Dracula",
+  "version": "1.0.0",
+  "author": "Archon Project",
+  "description": "The iconic Dracula dark theme. Deep purples and vibrant neons for a vampiric browsing experience.",
+  "colors": {
+    "background": {
+      "dim": "#21222c",
+      "surface": "#282a36",
+      "floating": "#44475a"
+    },
+    "foreground": {
+      "primary": "#f8f8f2",
+      "muted": "#bd93f9",
+      "subtle": "#6272a4"
+    },
+    "accents": {
+      "primary": "#bd93f9",
+      "secondary": "#8be9fd",
+      "mint": "#50fa7b",
+      "ghost": "#6272a4"
+    },
+    "status": {
+      "info": "#8be9fd",
+      "success": "#50fa7b",
+      "warning": "#ffb86c",
+      "danger": "#ff5555"
+    }
+  }
+}

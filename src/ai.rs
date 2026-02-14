@@ -152,6 +152,11 @@ impl AiBridge {
 
         let response_result = match config.kind {
             AiProviderKind::LocalOllama => self.chat_with_ollama(config, &prompt, http),
+            // LiteLLM, OpenRouter, Groq, Together all use OpenAI-compatible API
+            AiProviderKind::LiteLlm
+            | AiProviderKind::OpenRouter
+            | AiProviderKind::Groq
+            | AiProviderKind::Together => self.chat_with_openai_compatible(config, &prompt, http),
             AiProviderKind::OpenAi => self.chat_with_openai(config, &prompt, http),
             AiProviderKind::Claude => self.chat_with_claude(config, &prompt, http),
             AiProviderKind::Gemini => self.chat_with_gemini(config, &prompt, http),
@@ -366,6 +371,125 @@ impl AiBridge {
         let elapsed = started.elapsed();
         let parsed: OpenAiChatResponse = serde_json::from_value(response)
             .with_context(|| "Malformed response from OpenAI chat endpoint".to_string())?;
+        let reply = parsed
+            .choices
+            .first()
+            .and_then(|choice| choice.message.as_ref())
+            .map(|message| message.content.clone())
+            .unwrap_or_default();
+
+        Ok(AiChatResponse {
+            provider: config.name.clone(),
+            model: parsed.model.unwrap_or_else(|| model.clone()),
+            reply,
+            latency_ms: elapsed.as_millis() as u64,
+            conversation_id: None,
+            transcript: None,
+        })
+    }
+
+    /// Generic OpenAI-compatible chat handler for LiteLLM, OpenRouter, Groq, Together, etc.
+    fn chat_with_openai_compatible<T: AiHttp>(
+        &self,
+        config: &AiProviderConfig,
+        prompt: &AiChatPrompt,
+        http: &T,
+    ) -> Result<AiChatResponse> {
+        // Use default base URL for provider if no endpoint configured
+        let base_url = if config.endpoint.is_empty() {
+            config.kind.default_base_url().to_string()
+        } else {
+            config.endpoint.trim_end_matches('/').to_string()
+        };
+
+        let model = config
+            .default_model
+            .clone()
+            .unwrap_or_else(|| match config.kind {
+                AiProviderKind::LiteLlm => "gpt-4o-mini".into(), // LiteLLM routes to configured backend
+                AiProviderKind::OpenRouter => "openai/gpt-4o-mini".into(),
+                AiProviderKind::Groq => "llama-3.1-70b-versatile".into(),
+                AiProviderKind::Together => "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo".into(),
+                _ => "gpt-4o-mini".into(),
+            });
+
+        let chat_path = config
+            .chat_path
+            .clone()
+            .unwrap_or_else(|| "chat/completions".into());
+        let url = join_endpoint(&base_url, &chat_path);
+        let temperature = config.temperature.unwrap_or(0.2);
+
+        // Build headers - API key may be optional for local LiteLLM
+        let mut headers = vec![("Content-Type".into(), "application/json".into())];
+        if let Some(api_key) = optional_api_key(config) {
+            headers.push(("Authorization".into(), format!("Bearer {api_key}")));
+        }
+
+        // OpenRouter needs additional headers
+        if config.kind == AiProviderKind::OpenRouter {
+            headers.push(("HTTP-Referer".into(), "https://archon.browser".into()));
+            headers.push(("X-Title".into(), "Archon Browser".into()));
+        }
+
+        let headers = build_auth_headers(headers, config);
+
+        // Build messages
+        let mut user_content = Vec::new();
+        if !prompt.text.is_empty() {
+            user_content.push(json!({
+                "type": "text",
+                "text": prompt.text.clone()
+            }));
+        }
+
+        // Most OpenAI-compatible APIs support image URLs
+        for attachment in &prompt.attachments {
+            if attachment.kind == AiAttachmentKind::Image {
+                let data_uri = attachment.data_uri();
+                user_content.push(json!({
+                    "type": "image_url",
+                    "image_url": {"url": data_uri}
+                }));
+            }
+            // Audio support varies by provider - skip for now
+        }
+
+        if user_content.is_empty() {
+            bail!("prompt must include text or attachments");
+        }
+
+        let mut messages = Vec::new();
+        messages.push(json!({
+            "role": "system",
+            "content": SYSTEM_PROMPT
+        }));
+
+        for entry in &prompt.history {
+            messages.push(json!({
+                "role": entry.role.as_api_role(),
+                "content": entry.content.clone()
+            }));
+        }
+
+        messages.push(json!({
+            "role": "user",
+            "content": user_content
+        }));
+
+        let payload = json!({
+            "model": model,
+            "temperature": temperature,
+            "messages": messages
+        });
+
+        let started = Instant::now();
+        let response = http.post_json(&url, &headers, &payload)?;
+        let elapsed = started.elapsed();
+
+        let parsed: OpenAiChatResponse = serde_json::from_value(response)
+            .with_context(|| format!("Malformed response from {} chat endpoint", config.kind))?;
+
         let reply = parsed
             .choices
             .first()
@@ -1040,6 +1164,17 @@ fn require_api_key(config: &AiProviderConfig) -> Result<String> {
         );
     }
     Ok(value)
+}
+
+/// Get API key if available, returns None if not configured or not set.
+fn optional_api_key(config: &AiProviderConfig) -> Option<String> {
+    let env_key = config.api_key_env.as_ref()?;
+    let value = env::var(env_key).ok()?;
+    if value.trim().is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 fn build_auth_headers(

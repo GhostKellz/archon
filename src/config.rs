@@ -62,30 +62,77 @@ impl Default for PolicyProfile {
 /// Available AI provider integrations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 pub enum AiProviderKind {
+    /// Local Ollama instance (default, no API key required)
     #[serde(rename = "local-ollama")]
     LocalOllama,
+    /// LiteLLM proxy - unified API for 100+ LLM providers
+    #[serde(rename = "litellm")]
+    LiteLlm,
+    /// OpenAI API (GPT-4, GPT-4o, etc.)
     #[serde(rename = "openai")]
     OpenAi,
+    /// Anthropic Claude API
     #[serde(rename = "claude")]
     Claude,
+    /// Google Gemini API
     #[serde(rename = "gemini")]
     Gemini,
+    /// xAI Grok API
     #[serde(rename = "xai")]
     Xai,
+    /// Perplexity API (online models)
     #[serde(rename = "perplexity")]
     Perplexity,
+    /// OpenRouter - multi-provider routing
+    #[serde(rename = "openrouter")]
+    OpenRouter,
+    /// Groq - fast inference API
+    #[serde(rename = "groq")]
+    Groq,
+    /// Together AI - open source models
+    #[serde(rename = "together")]
+    Together,
 }
 
 impl AiProviderKind {
     pub fn requires_api_key(&self) -> bool {
+        match self {
+            // Local providers don't require API keys
+            AiProviderKind::LocalOllama => false,
+            // LiteLLM may or may not depending on config
+            AiProviderKind::LiteLlm => false,
+            // All cloud providers require keys
+            _ => true,
+        }
+    }
+
+    /// Returns true if this provider uses OpenAI-compatible API format.
+    pub fn is_openai_compatible(&self) -> bool {
         matches!(
             self,
             AiProviderKind::OpenAi
-                | AiProviderKind::Claude
-                | AiProviderKind::Gemini
-                | AiProviderKind::Xai
-                | AiProviderKind::Perplexity
+                | AiProviderKind::LiteLlm
+                | AiProviderKind::LocalOllama
+                | AiProviderKind::OpenRouter
+                | AiProviderKind::Groq
+                | AiProviderKind::Together
         )
+    }
+
+    /// Returns the default base URL for this provider.
+    pub fn default_base_url(&self) -> &'static str {
+        match self {
+            AiProviderKind::LocalOllama => "http://127.0.0.1:11434/v1",
+            AiProviderKind::LiteLlm => "http://127.0.0.1:4000/v1",
+            AiProviderKind::OpenAi => "https://api.openai.com/v1",
+            AiProviderKind::Claude => "https://api.anthropic.com/v1",
+            AiProviderKind::Gemini => "https://generativelanguage.googleapis.com/v1beta",
+            AiProviderKind::Xai => "https://api.x.ai/v1",
+            AiProviderKind::Perplexity => "https://api.perplexity.ai",
+            AiProviderKind::OpenRouter => "https://openrouter.ai/api/v1",
+            AiProviderKind::Groq => "https://api.groq.com/openai/v1",
+            AiProviderKind::Together => "https://api.together.xyz/v1",
+        }
     }
 }
 
@@ -99,11 +146,15 @@ impl std::fmt::Display for AiProviderKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             AiProviderKind::LocalOllama => write!(f, "local-ollama"),
+            AiProviderKind::LiteLlm => write!(f, "litellm"),
             AiProviderKind::OpenAi => write!(f, "openai"),
             AiProviderKind::Claude => write!(f, "claude"),
             AiProviderKind::Gemini => write!(f, "gemini"),
             AiProviderKind::Xai => write!(f, "xai"),
             AiProviderKind::Perplexity => write!(f, "perplexity"),
+            AiProviderKind::OpenRouter => write!(f, "openrouter"),
+            AiProviderKind::Groq => write!(f, "groq"),
+            AiProviderKind::Together => write!(f, "together"),
         }
     }
 }
@@ -192,6 +243,10 @@ pub struct LaunchSettings {
     #[serde(default)]
     pub mcp: McpSettings,
     #[serde(default)]
+    pub n8n: N8nSettings,
+    #[serde(default)]
+    pub arc: ArcSearchSettings,
+    #[serde(default)]
     pub telemetry: TelemetrySettings,
     #[serde(default)]
     pub policy_profile: PolicyProfile,
@@ -219,6 +274,8 @@ impl Default for LaunchSettings {
             ghostdns: GhostDnsSettings::default(),
             ui: UiSettings::default(),
             mcp: McpSettings::default(),
+            n8n: N8nSettings::default(),
+            arc: ArcSearchSettings::default(),
             telemetry: TelemetrySettings::default(),
             policy_profile: PolicyProfile::default(),
             first_run_complete: false,
@@ -723,6 +780,176 @@ impl Default for McpSettings {
             docker: None,
             connectors: Vec::new(),
         }
+    }
+}
+
+/// N8N workflow automation integration settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct N8nSettings {
+    /// Whether N8N integration is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Default instance to use when none specified.
+    #[serde(default)]
+    pub default_instance: Option<String>,
+    /// Configured N8N instances.
+    #[serde(default)]
+    pub instances: Vec<N8nInstanceConfig>,
+}
+
+impl Default for N8nSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            default_instance: None,
+            instances: Vec::new(),
+        }
+    }
+}
+
+/// Configuration for a single N8N instance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct N8nInstanceConfig {
+    /// Unique name for this instance (e.g., "production", "local").
+    pub name: String,
+    /// Base URL of the N8N instance (e.g., "https://n8n.cktechx.com").
+    pub url: String,
+    /// Environment variable name containing the API key.
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    /// Whether this instance is enabled.
+    #[serde(default = "bool_true")]
+    pub enabled: bool,
+    /// Optional description of the instance.
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// Arc search settings - Archon's Perplexity-like search companion.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArcSearchSettings {
+    /// Whether Arc search is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Default search provider.
+    #[serde(default)]
+    pub default_provider: Option<String>,
+    /// Configured search providers.
+    #[serde(default = "ArcSearchSettings::default_providers")]
+    pub providers: Vec<ArcSearchProviderConfig>,
+    /// Maximum results to fetch.
+    #[serde(default = "ArcSearchSettings::default_max_results")]
+    pub max_results: usize,
+    /// Whether to auto-search for queries that look like questions.
+    #[serde(default)]
+    pub auto_search: bool,
+    /// System prompt enhancement for grounded responses.
+    #[serde(default = "ArcSearchSettings::default_system_prompt")]
+    pub system_prompt: String,
+}
+
+impl ArcSearchSettings {
+    fn default_providers() -> Vec<ArcSearchProviderConfig> {
+        vec![
+            ArcSearchProviderConfig::searxng_default(),
+            ArcSearchProviderConfig::brave_default(),
+            ArcSearchProviderConfig::tavily_default(),
+        ]
+    }
+
+    fn default_max_results() -> usize {
+        5
+    }
+
+    fn default_system_prompt() -> String {
+        "You are Arc, Archon's intelligent search companion. When answering questions, \
+         cite your sources using [N] notation. Be concise, accurate, and helpful."
+            .into()
+    }
+}
+
+impl Default for ArcSearchSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            default_provider: None,
+            providers: Self::default_providers(),
+            max_results: Self::default_max_results(),
+            auto_search: false,
+            system_prompt: Self::default_system_prompt(),
+        }
+    }
+}
+
+/// Configuration for a search provider used by Arc.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArcSearchProviderConfig {
+    /// Provider name.
+    pub name: String,
+    /// Search provider kind.
+    pub kind: ArcSearchProviderKind,
+    /// API endpoint.
+    pub endpoint: String,
+    /// Environment variable for API key.
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    /// Whether this provider is enabled.
+    #[serde(default = "bool_true")]
+    pub enabled: bool,
+}
+
+impl ArcSearchProviderConfig {
+    /// Default SearXNG configuration (self-hosted).
+    pub fn searxng_default() -> Self {
+        Self {
+            name: "searxng".into(),
+            kind: ArcSearchProviderKind::SearXng,
+            endpoint: "http://localhost:8888".into(),
+            api_key_env: None,
+            enabled: true,
+        }
+    }
+
+    /// Default Brave Search configuration.
+    pub fn brave_default() -> Self {
+        Self {
+            name: "brave".into(),
+            kind: ArcSearchProviderKind::Brave,
+            endpoint: "https://api.search.brave.com/res/v1/web/search".into(),
+            api_key_env: Some("BRAVE_SEARCH_API_KEY".into()),
+            enabled: false,
+        }
+    }
+
+    /// Default Tavily configuration.
+    pub fn tavily_default() -> Self {
+        Self {
+            name: "tavily".into(),
+            kind: ArcSearchProviderKind::Tavily,
+            endpoint: "https://api.tavily.com/search".into(),
+            api_key_env: Some("TAVILY_API_KEY".into()),
+            enabled: false,
+        }
+    }
+}
+
+/// Supported search providers for Arc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ArcSearchProviderKind {
+    /// SearXNG self-hosted metasearch.
+    SearXng,
+    /// Brave Search API.
+    Brave,
+    /// Tavily AI search (optimized for RAG).
+    Tavily,
+    /// DuckDuckGo (via HTML scraping - rate limited).
+    DuckDuckGo,
+}
+
+impl Default for ArcSearchProviderKind {
+    fn default() -> Self {
+        ArcSearchProviderKind::SearXng
     }
 }
 

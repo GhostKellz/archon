@@ -23,7 +23,7 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 url = "2.5"
 wayland-client = "0.31"
 reqwest = { version = "0.12", features = ["blocking", "json", "stream"] }
-tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "signal", "net", "io-util"] }
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "signal", "net", "io-util", "io-std"] }
 hyper = { version = "1.4", features = ["http1", "http2", "server"] }
 axum = { version = "0.7", features = ["json"] }
 base64 = "0.22"

@@ -6,8 +6,10 @@ pub mod engine;
 pub mod ghostdns;
 pub mod host;
 pub mod mcp;
+pub mod n8n;
 pub mod policy;
 pub mod profile;
+pub mod search;
 pub mod sync;
 pub mod telemetry;
 pub mod theme;
@@ -31,7 +33,9 @@ use crate::engine::{CommandSpec, EngineRegistry};
 use crate::ghostdns::{ConfigWriteAction, ConfigWriteOutcome, GhostDns, GhostDnsHealthReport};
 use crate::host::{AiHost, AiHostHealthReport};
 use crate::mcp::{McpHealthReport, McpOrchestrator};
+use crate::n8n::{N8nOrchestrator, N8nTriggerResult, N8nWorkflow};
 use crate::policy::{PolicyWriteAction, PolicyWriteOutcome};
+use crate::search::{ArcOrchestrator, ArcSearchResult};
 use crate::profile::{ProfileBadge, ProfileRecord, ProfileStore};
 use crate::sync::{SyncEvent, SyncLayer};
 use crate::telemetry::ProcessMonitor;
@@ -83,6 +87,8 @@ pub struct Launcher {
     ghostdns: GhostDns,
     ui: UiShell,
     mcp: McpOrchestrator,
+    n8n: N8nOrchestrator,
+    arc: ArcOrchestrator,
 }
 
 impl Launcher {
@@ -166,6 +172,8 @@ impl Launcher {
         let crypto = CryptoStack::from_settings(&settings.crypto);
         let ghostdns = GhostDns::from_settings(&settings.ghostdns)?;
         let mcp = McpOrchestrator::from_settings(settings.mcp.clone());
+        let n8n = N8nOrchestrator::from_settings(settings.n8n.clone());
+        let arc = ArcOrchestrator::from_settings(settings.arc.clone());
         let palette = ThemeRegistry::load(&settings.ui.theme, config_dir.as_deref())
             .unwrap_or_else(|err| {
                 warn!(error = %err, "Falling back to default theme palette");
@@ -198,6 +206,8 @@ impl Launcher {
             ghostdns,
             ui,
             mcp,
+            n8n,
+            arc,
         })
     }
 
@@ -494,6 +504,14 @@ impl Launcher {
         &self.mcp
     }
 
+    pub fn n8n(&self) -> &N8nOrchestrator {
+        &self.n8n
+    }
+
+    pub fn arc(&self) -> &ArcOrchestrator {
+        &self.arc
+    }
+
     /// Convenience helper for launching Chromium Max with managed policy defaults.
     pub fn spawn_chromium_max(
         &mut self,
@@ -583,6 +601,21 @@ impl Launcher {
     ) -> Result<AiChatResponse> {
         let client = BlockingAiHttp::default();
         self.ai.chat_with_prompt(provider, prompt, &client)
+    }
+
+    /// Perform an Arc web search with AI-grounded response.
+    pub fn arc_search(&self, query: &str) -> Result<ArcSearchResult> {
+        self.arc.grounded_search(query)
+    }
+
+    /// List N8N workflows from the default instance.
+    pub fn n8n_workflows(&self) -> Result<Vec<N8nWorkflow>> {
+        self.n8n.list_workflows(None)
+    }
+
+    /// Trigger an N8N workflow by ID.
+    pub fn n8n_trigger(&self, workflow_id: &str) -> Result<N8nTriggerResult> {
+        self.n8n.trigger_workflow(workflow_id, None, None)
     }
 
     /// Produce a high-level diagnostics report without mutating launcher state.

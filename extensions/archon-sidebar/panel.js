@@ -24,6 +24,29 @@ const conversationContext = document.getElementById('conversation-context');
 const conversationContextLabel = document.getElementById('conversation-context-label');
 const conversationReset = document.getElementById('conversation-reset');
 
+// Tab navigation
+const tabButtons = document.querySelectorAll('.tab-btn');
+const tabPanels = document.querySelectorAll('.tab-panel');
+
+// Arc Search elements
+const arcForm = document.getElementById('arc-form');
+const arcQueryInput = document.getElementById('arc-query');
+const arcAiProviderSelect = document.getElementById('arc-ai-provider');
+const arcStatus = document.getElementById('arc-status');
+const arcResults = document.getElementById('arc-results');
+
+// N8N elements
+const n8nStatus = document.getElementById('n8n-status');
+const n8nWorkflowList = document.getElementById('n8n-workflows');
+const n8nRefreshBtn = document.getElementById('n8n-refresh');
+const n8nExecutionPanel = document.getElementById('n8n-execution');
+const n8nExecutionContent = document.getElementById('n8n-execution-content');
+const n8nCloseExecution = document.getElementById('n8n-close-execution');
+const n8nActionButtons = document.querySelectorAll('.n8n-action');
+
+// Voice input elements
+const voiceBtn = document.getElementById('voice-btn');
+
 const toolSubmitButton = toolForm?.querySelector('button[type="submit"]');
 
 let port = null;
@@ -796,6 +819,12 @@ function connectNative() {
       return;
     }
 
+    // Arc Search response
+    if (message.kind === 'arc_ask' || message.kind === 'arc_result') {
+      handleArcResponse(message);
+      return;
+    }
+
     if (message.success && message.data) {
       const { reply, provider, model, latency_ms, transcript } = message.data;
       appendMessage(
@@ -975,6 +1004,7 @@ function handleProvidersResponse(message) {
   providerCache = providers;
   const defaultProvider = typeof payload?.default === 'string' ? payload.default : '';
   renderProviderOptions(defaultProvider);
+  renderArcProviderOptions();
 
   if (Array.isArray(payload?.metrics)) {
     updateMetricsSnapshot(payload.metrics);
@@ -1298,3 +1328,1020 @@ if (toolForm) {
     });
   });
 }
+
+// ============================================================================
+// Tab Navigation
+// ============================================================================
+
+function switchTab(tabName) {
+  tabButtons.forEach((btn) => {
+    const isActive = btn.dataset.tab === tabName;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+  });
+
+  tabPanels.forEach((panel) => {
+    const isActive = panel.id === `tab-${tabName}`;
+    panel.classList.toggle('active', isActive);
+    panel.hidden = !isActive;
+  });
+}
+
+tabButtons.forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const tabName = btn.dataset.tab;
+    if (tabName) {
+      switchTab(tabName);
+    }
+  });
+});
+
+// ============================================================================
+// Arc Search (Perplexity-like)
+// ============================================================================
+
+let arcPendingRequest = false;
+
+function setArcStatus(text, tone = 'searching') {
+  if (!arcStatus) return;
+  arcStatus.textContent = text;
+  arcStatus.dataset.tone = tone;
+  arcStatus.hidden = !text;
+}
+
+function clearArcStatus() {
+  if (!arcStatus) return;
+  arcStatus.hidden = true;
+}
+
+function renderArcProviderOptions() {
+  if (!arcAiProviderSelect) return;
+
+  arcAiProviderSelect.innerHTML = '';
+
+  const defaultOption = document.createElement('option');
+  defaultOption.value = '';
+  defaultOption.textContent = 'Default AI';
+  arcAiProviderSelect.append(defaultOption);
+
+  providerCache.forEach((entry) => {
+    if (!entry.enabled) return;
+    const option = document.createElement('option');
+    option.value = entry.name;
+    option.textContent = entry.label ?? entry.name;
+    arcAiProviderSelect.append(option);
+  });
+}
+
+function renderArcPlaceholder() {
+  if (!arcResults) return;
+  arcResults.innerHTML = `
+    <div class="arc-placeholder">
+      <div class="arc-placeholder-icon">🌐</div>
+      <p>Arc searches the web and answers with sources.</p>
+      <p class="arc-hint">Try: "What's new in Rust 2024?" or "Latest AI news"</p>
+    </div>
+  `;
+}
+
+function renderArcAnswer(data) {
+  if (!arcResults) return;
+
+  const answer = data.answer || data.raw_answer || '';
+  const question = data.question || '';
+  const citations = data.citations || [];
+  const aiProvider = data.ai_provider || 'unknown';
+  const aiModel = data.ai_model || '';
+  const searchLatency = data.search_latency_ms || 0;
+  const aiLatency = data.ai_latency_ms || 0;
+
+  const card = document.createElement('article');
+  card.className = 'arc-answer';
+
+  // Header
+  const header = document.createElement('header');
+  header.className = 'arc-answer-header';
+
+  const queryEl = document.createElement('span');
+  queryEl.className = 'arc-answer-query';
+  queryEl.textContent = question;
+  header.append(queryEl);
+
+  const meta = document.createElement('span');
+  meta.className = 'arc-answer-meta';
+  meta.textContent = `${aiProvider}${aiModel ? ` • ${aiModel}` : ''} • ${searchLatency + aiLatency}ms`;
+  header.append(meta);
+
+  card.append(header);
+
+  // Body (answer text with basic markdown support)
+  const body = document.createElement('div');
+  body.className = 'arc-answer-body';
+  body.innerHTML = formatArcAnswer(answer);
+  card.append(body);
+
+  // Citations
+  if (citations.length > 0) {
+    const citationsSection = document.createElement('footer');
+    citationsSection.className = 'arc-citations';
+
+    const citationsTitle = document.createElement('h4');
+    citationsTitle.className = 'arc-citations-title';
+    citationsTitle.textContent = 'Sources';
+    citationsSection.append(citationsTitle);
+
+    const citationList = document.createElement('ul');
+    citationList.className = 'arc-citation-list';
+
+    citations.forEach((citation) => {
+      const li = document.createElement('li');
+      li.className = 'arc-citation';
+
+      const num = document.createElement('span');
+      num.className = 'arc-citation-num';
+      num.textContent = citation.number;
+      li.append(num);
+
+      const linkWrapper = document.createElement('span');
+      const link = document.createElement('a');
+      link.className = 'arc-citation-link';
+      link.href = citation.url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = citation.title || citation.url;
+      linkWrapper.append(link);
+
+      if (citation.domain) {
+        const domain = document.createElement('span');
+        domain.className = 'arc-citation-domain';
+        domain.textContent = ` (${citation.domain})`;
+        linkWrapper.append(domain);
+      }
+
+      li.append(linkWrapper);
+      citationList.append(li);
+    });
+
+    citationsSection.append(citationList);
+    card.append(citationsSection);
+  }
+
+  // Prepend new answer to results
+  const placeholder = arcResults.querySelector('.arc-placeholder');
+  if (placeholder) {
+    placeholder.remove();
+  }
+  arcResults.prepend(card);
+}
+
+function formatArcAnswer(text) {
+  // Enhanced markdown rendering
+  let html = text;
+
+  // First, extract and protect code blocks
+  const codeBlocks = [];
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    const index = codeBlocks.length;
+    codeBlocks.push({ lang, code: code.trim() });
+    return `\x00CODE_BLOCK_${index}\x00`;
+  });
+
+  // Escape HTML in the remaining text
+  html = html
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  // Headers (h1-h3)
+  html = html
+    .replace(/^### (.+)$/gm, '<h4 class="arc-h4">$1</h4>')
+    .replace(/^## (.+)$/gm, '<h3 class="arc-h3">$1</h3>')
+    .replace(/^# (.+)$/gm, '<h2 class="arc-h2">$1</h2>');
+
+  // Bold and italic
+  html = html
+    .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+    .replace(/__(.+?)__/g, '<strong>$1</strong>')
+    .replace(/_(.+?)_/g, '<em>$1</em>');
+
+  // Inline code (must come after escaping)
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Citation markers [N]
+  html = html.replace(/\[(\d+)\]/g, '<span class="arc-ref" data-citation="$1">$1</span>');
+
+  // Unordered lists
+  html = html.replace(/^[\-\*] (.+)$/gm, '<li>$1</li>');
+  html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul class="arc-list">$&</ul>');
+
+  // Ordered lists
+  html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+
+  // Links [text](url)
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+  // Horizontal rules
+  html = html.replace(/^---$/gm, '<hr class="arc-hr">');
+
+  // Blockquotes
+  html = html.replace(/^&gt; (.+)$/gm, '<blockquote class="arc-quote">$1</blockquote>');
+
+  // Paragraphs - convert double newlines to paragraph breaks
+  html = html.replace(/\n\n+/g, '</p><p>');
+
+  // Single newlines to <br>
+  html = html.replace(/\n/g, '<br>');
+
+  // Wrap in paragraph tags
+  html = `<p>${html}</p>`;
+
+  // Clean up empty paragraphs
+  html = html.replace(/<p>\s*<\/p>/g, '');
+  html = html.replace(/<p>(<h[234])/g, '$1');
+  html = html.replace(/(<\/h[234]>)<\/p>/g, '$1');
+  html = html.replace(/<p>(<ul)/g, '$1');
+  html = html.replace(/(<\/ul>)<\/p>/g, '$1');
+  html = html.replace(/<p>(<blockquote)/g, '$1');
+  html = html.replace(/(<\/blockquote>)<\/p>/g, '$1');
+  html = html.replace(/<p>(<hr)/g, '$1');
+  html = html.replace(/(<hr[^>]*>)<\/p>/g, '$1');
+
+  // Restore code blocks
+  codeBlocks.forEach((block, index) => {
+    const langClass = block.lang ? ` language-${block.lang}` : '';
+    const escapedCode = block.code
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    html = html.replace(
+      `\x00CODE_BLOCK_${index}\x00`,
+      `<pre class="arc-pre${langClass}"><code>${escapedCode}</code></pre>`
+    );
+  });
+
+  return html;
+}
+
+function handleArcResponse(message) {
+  arcPendingRequest = false;
+  clearArcStatus();
+
+  if (!message.success) {
+    setArcStatus(message.error ?? 'Arc search failed', 'error');
+    return;
+  }
+
+  const data = message.arc_result;
+  if (!data) {
+    setArcStatus('No results returned', 'error');
+    return;
+  }
+
+  renderArcAnswer(data);
+}
+
+// Theme handling
+const themeSelect = document.getElementById('theme-select');
+const THEME_STORAGE_KEY = 'archon-theme';
+
+function applyTheme(themeName) {
+  document.body.setAttribute('data-theme', themeName);
+  localStorage.setItem(THEME_STORAGE_KEY, themeName);
+}
+
+function loadSavedTheme() {
+  const saved = localStorage.getItem(THEME_STORAGE_KEY);
+  if (saved) {
+    applyTheme(saved);
+    if (themeSelect) {
+      themeSelect.value = saved;
+    }
+  }
+}
+
+if (themeSelect) {
+  themeSelect.addEventListener('change', () => {
+    applyTheme(themeSelect.value);
+  });
+}
+
+// Load theme on startup
+loadSavedTheme();
+
+// =============================================================================
+// N8N Workflow Integration
+// =============================================================================
+const N8N_API_BASE = 'http://127.0.0.1:7700';
+let n8nWorkflowCache = [];
+let n8nPendingExecution = false;
+
+function setN8nStatus(message, tone = '') {
+  if (n8nStatus) {
+    n8nStatus.textContent = message;
+    n8nStatus.setAttribute('data-tone', tone);
+  }
+}
+
+async function loadN8nWorkflows() {
+  setN8nStatus('Loading workflows…', 'pending');
+
+  try {
+    const response = await fetch(`${N8N_API_BASE}/n8n/workflows`);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const data = await response.json();
+    n8nWorkflowCache = data.workflows || [];
+
+    if (n8nWorkflowCache.length === 0) {
+      setN8nStatus('No workflows found', 'warn');
+      renderN8nPlaceholder();
+    } else {
+      setN8nStatus(`${n8nWorkflowCache.length} workflow${n8nWorkflowCache.length > 1 ? 's' : ''} loaded`);
+      renderN8nWorkflows();
+    }
+  } catch (err) {
+    console.error('N8N load error:', err);
+    setN8nStatus('N8N not connected', 'error');
+    renderN8nPlaceholder('N8N instance not reachable. Check configuration.');
+  }
+}
+
+function renderN8nPlaceholder(message) {
+  if (!n8nWorkflowList) return;
+  n8nWorkflowList.innerHTML = `
+    <div class="n8n-placeholder">
+      <div class="n8n-placeholder-icon">⚡</div>
+      <p>${message || 'Connect your N8N instance to automate workflows.'}</p>
+      <p class="n8n-hint">Configure in <code>~/.config/archon/config.json</code></p>
+    </div>
+  `;
+}
+
+function renderN8nWorkflows() {
+  if (!n8nWorkflowList) return;
+
+  n8nWorkflowList.innerHTML = n8nWorkflowCache.map(workflow => `
+    <div class="n8n-workflow-item ${workflow.active ? 'active' : 'inactive'}" data-workflow-id="${workflow.id}">
+      <div class="n8n-workflow-status"></div>
+      <div class="n8n-workflow-info">
+        <div class="n8n-workflow-name">${escapeHtml(workflow.name)}</div>
+        ${workflow.tags?.length ? `
+          <div class="n8n-workflow-tags">
+            ${workflow.tags.map(tag => `<span class="n8n-workflow-tag">${escapeHtml(tag.name)}</span>`).join('')}
+          </div>
+        ` : ''}
+      </div>
+      <button class="n8n-workflow-trigger" ${!workflow.active ? 'disabled' : ''} title="${workflow.active ? 'Run workflow' : 'Workflow inactive'}">
+        Run
+      </button>
+    </div>
+  `).join('');
+
+  // Add click handlers
+  n8nWorkflowList.querySelectorAll('.n8n-workflow-trigger').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const item = btn.closest('.n8n-workflow-item');
+      const workflowId = item?.dataset.workflowId;
+      if (workflowId) {
+        triggerN8nWorkflow(workflowId);
+      }
+    });
+  });
+}
+
+async function triggerN8nWorkflow(workflowId, inputData = {}) {
+  if (n8nPendingExecution) return;
+
+  const workflow = n8nWorkflowCache.find(w => w.id === workflowId);
+  if (!workflow) return;
+
+  n8nPendingExecution = true;
+  setN8nStatus(`Running "${workflow.name}"…`, 'pending');
+
+  try {
+    const response = await fetch(`${N8N_API_BASE}/n8n/trigger`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        workflow_id: workflowId,
+        data: inputData,
+      }),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || `HTTP ${response.status}`);
+    }
+
+    const result = await response.json();
+    setN8nStatus(`Completed in ${result.latency_ms}ms`, 'success');
+    showN8nExecution(result, true);
+  } catch (err) {
+    console.error('N8N trigger error:', err);
+    setN8nStatus(`Failed: ${err.message}`, 'error');
+    showN8nExecution({ error: err.message }, false);
+  } finally {
+    n8nPendingExecution = false;
+  }
+}
+
+function showN8nExecution(result, success) {
+  if (!n8nExecutionPanel || !n8nExecutionContent) return;
+
+  n8nExecutionPanel.hidden = false;
+
+  if (success) {
+    // Check if it's a summary result
+    if (result.summary !== undefined) {
+      const keyPointsHtml = result.key_points?.length
+        ? `<ul class="summary-key-points">${result.key_points.map(p => `<li>${escapeHtml(p)}</li>`).join('')}</ul>`
+        : '';
+
+      n8nExecutionContent.innerHTML = `
+        <div class="n8n-execution-summary">
+          <h4>${escapeHtml(result.title || 'Summary')}</h4>
+          ${result.url ? `<a href="${escapeHtml(result.url)}" class="summary-url" target="_blank">${escapeHtml(result.url)}</a>` : ''}
+          <div class="summary-text">${formatArcAnswer(result.summary)}</div>
+          ${keyPointsHtml}
+          ${result.provider ? `<p class="summary-meta">Provider: ${escapeHtml(result.provider)}</p>` : ''}
+        </div>
+      `;
+    }
+    // Check if it's a links result
+    else if (result.links !== undefined) {
+      const linksHtml = result.links.slice(0, 50).map(l =>
+        `<li><a href="${escapeHtml(l.href)}" target="_blank">${escapeHtml(l.text || l.href)}</a></li>`
+      ).join('');
+
+      n8nExecutionContent.innerHTML = `
+        <div class="n8n-execution-links">
+          <p>Found ${result.count} links</p>
+          <ul class="extracted-links">${linksHtml}</ul>
+        </div>
+      `;
+    }
+    // Check if it's a screenshot/vision result
+    else if (result.screenshot !== undefined) {
+      // Vision analysis result with description
+      if (result.description) {
+        n8nExecutionContent.innerHTML = `
+          <div class="n8n-execution-vision">
+            <h4>📸 Screenshot Analysis</h4>
+            <div class="vision-description">${formatArcAnswer(result.description)}</div>
+            <p class="vision-meta">
+              ${result.provider ? `<span>${escapeHtml(result.provider)}</span>` : ''}
+              ${result.model ? `<span>${escapeHtml(result.model)}</span>` : ''}
+              ${result.latency_ms ? `<span>${result.latency_ms}ms</span>` : ''}
+            </p>
+          </div>
+        `;
+      } else {
+        // Simple screenshot without AI analysis
+        n8nExecutionContent.innerHTML = `
+          <div class="n8n-execution-screenshot">
+            <p>Screenshot captured${result.size ? ` (${Math.round(result.size / 1024)} KB)` : ''}</p>
+          </div>
+        `;
+      }
+    }
+    // Default N8N workflow execution result
+    else {
+      n8nExecutionContent.innerHTML = `
+        <div class="n8n-execution-success">
+          <p>Execution ID: ${result.execution_id || 'N/A'}</p>
+          ${result.latency_ms ? `<p>Latency: ${result.latency_ms}ms</p>` : ''}
+          ${result.data ? `<pre>${JSON.stringify(result.data, null, 2)}</pre>` : ''}
+        </div>
+      `;
+    }
+  } else {
+    n8nExecutionContent.innerHTML = `
+      <div class="n8n-execution-error">
+        <p>Error: ${result.error || 'Unknown error'}</p>
+      </div>
+    `;
+  }
+}
+
+function hideN8nExecution() {
+  if (n8nExecutionPanel) {
+    n8nExecutionPanel.hidden = true;
+  }
+}
+
+// Quick Actions
+async function handleQuickAction(action) {
+  switch (action) {
+    case 'summarize-page':
+      setN8nStatus('Extracting page content…', 'pending');
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) {
+          setN8nStatus('No active tab', 'error');
+          break;
+        }
+
+        // Extract main content from the page
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            // Try to get article/main content, fall back to body
+            const article = document.querySelector('article, main, [role="main"], .content, #content');
+            const target = article || document.body;
+
+            // Get text content, clean up whitespace
+            const text = target.innerText
+              .replace(/\s+/g, ' ')
+              .trim()
+              .slice(0, 15000); // Limit to ~15k chars
+
+            return {
+              title: document.title,
+              url: window.location.href,
+              content: text,
+            };
+          },
+        });
+
+        const pageData = results?.[0]?.result;
+        if (!pageData?.content || pageData.content.length < 50) {
+          setN8nStatus('Not enough content to summarize', 'warn');
+          break;
+        }
+
+        setN8nStatus('Summarizing…', 'pending');
+
+        const response = await fetch(`${N8N_API_BASE}/summarize`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            content: `Title: ${pageData.title}\nURL: ${pageData.url}\n\n${pageData.content}`,
+            style: 'bullets',
+          }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          showN8nExecution({
+            title: pageData.title,
+            url: pageData.url,
+            summary: data.summary,
+            key_points: data.key_points,
+            provider: data.provider,
+          }, true);
+          setN8nStatus('Page summarized', 'success');
+        } else {
+          const err = await response.json().catch(() => ({}));
+          setN8nStatus(err.error || 'Summarization failed', 'error');
+        }
+      } catch (err) {
+        console.error('Summarization error:', err);
+        setN8nStatus('Summarization failed', 'error');
+      }
+      break;
+
+    case 'extract-links':
+      setN8nStatus('Extracting links…', 'pending');
+      try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tab?.id) {
+          const results = await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => Array.from(document.querySelectorAll('a[href]')).map(a => ({
+              text: a.textContent?.trim().slice(0, 100),
+              href: a.href,
+            })).filter(l => l.href.startsWith('http')),
+          });
+          const links = results?.[0]?.result || [];
+          showN8nExecution({ links, count: links.length }, true);
+          setN8nStatus(`Found ${links.length} links`);
+        }
+      } catch (err) {
+        setN8nStatus('Link extraction failed', 'error');
+      }
+      break;
+
+    case 'screenshot':
+      setN8nStatus('Capturing screenshot…', 'pending');
+      try {
+        const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+        if (!dataUrl) {
+          setN8nStatus('Failed to capture screenshot', 'error');
+          break;
+        }
+
+        setN8nStatus('Analyzing screenshot with AI…', 'pending');
+
+        // Extract base64 data (remove data URI prefix)
+        const base64Data = dataUrl.replace(/^data:image\/\w+;base64,/, '');
+
+        const response = await fetch(`${N8N_API_BASE}/vision`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            image: base64Data,
+            mime_type: 'image/png',
+            prompt: 'Describe what you see in this screenshot. Identify the main content, any text, UI elements, and overall purpose of the page.',
+          }),
+        });
+
+        if (response.ok) {
+          const data = await response.json();
+          showN8nExecution({
+            screenshot: true,
+            description: data.description,
+            provider: data.provider,
+            model: data.model,
+            latency_ms: data.latency_ms,
+          }, true);
+          setN8nStatus('Screenshot analyzed', 'success');
+        } else {
+          const err = await response.json().catch(() => ({}));
+          setN8nStatus(err.error || 'Vision analysis failed', 'error');
+          // Fall back to showing just the screenshot
+          showN8nExecution({ screenshot: 'Captured (analysis unavailable)', size: dataUrl.length }, true);
+        }
+      } catch (err) {
+        console.error('Screenshot/vision error:', err);
+        setN8nStatus('Screenshot failed', 'error');
+      }
+      break;
+
+    case 'save-to-notion':
+      setN8nStatus('Saving to Notion…', 'pending');
+      // This would trigger an N8N workflow with Notion integration
+      const notionWorkflow = n8nWorkflowCache.find(w =>
+        w.name.toLowerCase().includes('notion') && w.active
+      );
+      if (notionWorkflow) {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        await triggerN8nWorkflow(notionWorkflow.id, {
+          url: tab?.url,
+          title: tab?.title,
+        });
+      } else {
+        setN8nStatus('No Notion workflow configured', 'warn');
+      }
+      break;
+  }
+}
+
+// Event listeners
+if (n8nRefreshBtn) {
+  n8nRefreshBtn.addEventListener('click', loadN8nWorkflows);
+}
+
+if (n8nCloseExecution) {
+  n8nCloseExecution.addEventListener('click', hideN8nExecution);
+}
+
+n8nActionButtons.forEach(btn => {
+  btn.addEventListener('click', () => {
+    const action = btn.dataset.action;
+    if (action) handleQuickAction(action);
+  });
+});
+
+// Load workflows when N8N tab is first shown
+let n8nLoaded = false;
+tabButtons.forEach(btn => {
+  btn.addEventListener('click', () => {
+    if (btn.dataset.tab === 'n8n' && !n8nLoaded) {
+      n8nLoaded = true;
+      loadN8nWorkflows();
+    }
+  });
+});
+
+// Arc Search - use HTTP streaming (SSE) for better UX
+const ARC_API_BASE = 'http://127.0.0.1:7700';
+let arcEventSource = null;
+let arcStreamingAnswer = '';
+let arcStreamingCard = null;
+
+function createStreamingCard(query) {
+  const card = document.createElement('article');
+  card.className = 'arc-answer arc-streaming';
+  card.innerHTML = `
+    <header class="arc-answer-header">
+      <span class="arc-answer-query">${escapeHtml(query)}</span>
+      <span class="arc-answer-meta">
+        <span class="arc-streaming-indicator">Streaming…</span>
+      </span>
+    </header>
+    <div class="arc-answer-body" id="arc-streaming-body"></div>
+    <div class="arc-citations arc-citations-pending" id="arc-streaming-citations">
+      <p class="arc-citations-title">Sources</p>
+      <ul class="arc-citation-list"></ul>
+    </div>
+  `;
+  return card;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+async function submitArcSearch(query, aiProvider) {
+  arcPendingRequest = true;
+  arcStreamingAnswer = '';
+
+  // Create streaming card immediately
+  const placeholder = arcResults?.querySelector('.arc-placeholder');
+  if (placeholder) placeholder.remove();
+
+  arcStreamingCard = createStreamingCard(query);
+  arcResults?.prepend(arcStreamingCard);
+
+  const streamBody = arcStreamingCard.querySelector('#arc-streaming-body');
+  const citationsList = arcStreamingCard.querySelector('.arc-citation-list');
+
+  try {
+    // Use fetch with streaming for SSE
+    const response = await fetch(`${ARC_API_BASE}/arc/ask/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: query, ai_provider: aiProvider }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('event:')) {
+          const eventType = line.slice(6).trim();
+          continue;
+        }
+        if (line.startsWith('data:')) {
+          const data = line.slice(5).trim();
+          if (!data) continue;
+
+          try {
+            const parsed = JSON.parse(data);
+            handleArcStreamEvent(parsed, streamBody, citationsList);
+          } catch (e) {
+            // Not JSON, might be keep-alive
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error('Arc streaming error:', err);
+    // Fallback to native messaging
+    setArcStatus('Streaming failed, using fallback…', 'error');
+    arcStreamingCard?.remove();
+    arcStreamingCard = null;
+
+    if (port) {
+      port.postMessage({
+        type: 'arc_ask',
+        question: query,
+        ai_provider: aiProvider,
+      });
+    }
+    return;
+  }
+
+  arcPendingRequest = false;
+  clearArcStatus();
+
+  // Finalize the card
+  if (arcStreamingCard) {
+    arcStreamingCard.classList.remove('arc-streaming');
+    const indicator = arcStreamingCard.querySelector('.arc-streaming-indicator');
+    if (indicator) indicator.remove();
+  }
+  arcStreamingCard = null;
+}
+
+function handleArcStreamEvent(data, streamBody, citationsList) {
+  // Status events
+  if (data.stage) {
+    switch (data.stage) {
+      case 'searching':
+        setArcStatus('Searching the web…', 'searching');
+        break;
+      case 'thinking':
+        setArcStatus('Analyzing sources…', 'thinking');
+        break;
+      case 'streaming':
+        setArcStatus('Generating response…', 'thinking');
+        break;
+      case 'finished':
+        clearArcStatus();
+        break;
+    }
+    return;
+  }
+
+  // Sources event
+  if (data.citations && Array.isArray(data.citations)) {
+    citationsList.innerHTML = data.citations.map((c, i) => `
+      <li class="arc-citation">
+        <span class="arc-citation-num">${i + 1}</span>
+        <a href="${escapeHtml(c.url)}" target="_blank" rel="noopener" class="arc-citation-link">
+          ${escapeHtml(c.title || c.url)}
+        </a>
+      </li>
+    `).join('');
+    return;
+  }
+
+  // Delta (text chunk) event
+  if (data.text !== undefined) {
+    arcStreamingAnswer += data.text;
+    if (streamBody) {
+      streamBody.innerHTML = formatArcAnswer(arcStreamingAnswer);
+    }
+    return;
+  }
+
+  // Complete event - finalize with full data
+  if (data.answer !== undefined) {
+    arcStreamingAnswer = data.raw_answer || data.answer;
+    if (streamBody) {
+      streamBody.innerHTML = formatArcAnswer(arcStreamingAnswer);
+    }
+
+    // Update meta info
+    const meta = arcStreamingCard?.querySelector('.arc-answer-meta');
+    if (meta && data.ai_provider) {
+      meta.innerHTML = `
+        <span>${escapeHtml(data.ai_provider)}</span>
+        <span>${data.ai_latency_ms ?? 0}ms</span>
+      `;
+    }
+  }
+
+  // Error event
+  if (data.message && !data.answer) {
+    setArcStatus(data.message, 'error');
+  }
+}
+
+if (arcForm) {
+  arcForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (arcPendingRequest) return;
+
+    const query = arcQueryInput?.value.trim() ?? '';
+    if (!query) {
+      setArcStatus('Please enter a question', 'error');
+      return;
+    }
+
+    const aiProvider = arcAiProviderSelect?.value || undefined;
+    submitArcSearch(query, aiProvider);
+  });
+}
+
+// =============================================================================
+// Voice Input (Web Speech API)
+// =============================================================================
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+let recognition = null;
+let isListening = false;
+
+function initVoiceInput() {
+  if (!SpeechRecognition) {
+    if (voiceBtn) {
+      voiceBtn.disabled = true;
+      voiceBtn.title = 'Voice input not supported in this browser';
+    }
+    return;
+  }
+
+  recognition = new SpeechRecognition();
+  recognition.continuous = false;
+  recognition.interimResults = true;
+  recognition.lang = 'en-US';
+
+  recognition.onstart = () => {
+    isListening = true;
+    voiceBtn?.classList.add('listening');
+  };
+
+  recognition.onend = () => {
+    isListening = false;
+    voiceBtn?.classList.remove('listening');
+  };
+
+  recognition.onerror = (event) => {
+    console.error('Speech recognition error:', event.error);
+    isListening = false;
+    voiceBtn?.classList.remove('listening');
+
+    if (event.error === 'not-allowed') {
+      setStatus('Microphone access denied', 'error');
+    } else if (event.error === 'no-speech') {
+      // Ignore no-speech errors
+    } else {
+      setStatus(`Voice error: ${event.error}`, 'error');
+    }
+  };
+
+  recognition.onresult = (event) => {
+    let interimTranscript = '';
+    let finalTranscript = '';
+
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const transcript = event.results[i][0].transcript;
+      if (event.results[i].isFinal) {
+        finalTranscript += transcript;
+      } else {
+        interimTranscript += transcript;
+      }
+    }
+
+    // Update textarea with current speech
+    if (textarea) {
+      const existingText = textarea.dataset.preVoiceText || '';
+      if (finalTranscript) {
+        textarea.value = existingText + (existingText ? ' ' : '') + finalTranscript;
+        textarea.dataset.preVoiceText = textarea.value;
+      } else if (interimTranscript) {
+        textarea.value = existingText + (existingText ? ' ' : '') + interimTranscript;
+      }
+    }
+  };
+}
+
+function startListening() {
+  if (!recognition || isListening) return;
+
+  // Store current text before voice input
+  if (textarea) {
+    textarea.dataset.preVoiceText = textarea.value;
+  }
+
+  try {
+    recognition.start();
+  } catch (err) {
+    console.error('Failed to start recognition:', err);
+  }
+}
+
+function stopListening() {
+  if (!recognition || !isListening) return;
+
+  try {
+    recognition.stop();
+  } catch (err) {
+    console.error('Failed to stop recognition:', err);
+  }
+
+  // Clean up temp data
+  if (textarea) {
+    delete textarea.dataset.preVoiceText;
+  }
+}
+
+// Voice button event listeners (hold-to-speak)
+if (voiceBtn) {
+  voiceBtn.addEventListener('mousedown', startListening);
+  voiceBtn.addEventListener('mouseup', stopListening);
+  voiceBtn.addEventListener('mouseleave', stopListening);
+
+  // Touch support for mobile
+  voiceBtn.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    startListening();
+  });
+  voiceBtn.addEventListener('touchend', (e) => {
+    e.preventDefault();
+    stopListening();
+  });
+
+  // Click-to-toggle mode (alternative)
+  // voiceBtn.addEventListener('click', () => {
+  //   if (isListening) {
+  //     stopListening();
+  //   } else {
+  //     startListening();
+  //   }
+  // });
+}
+
+// Initialize voice input on load
+initVoiceInput();
+

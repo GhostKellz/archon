@@ -385,6 +385,7 @@ pub enum TranscriptSource {
     Cli,
     Sidebar,
     HostApi,
+    ArcSearch,
     Unknown,
 }
 
@@ -400,6 +401,7 @@ impl std::fmt::Display for TranscriptSource {
             TranscriptSource::Cli => write!(f, "CLI"),
             TranscriptSource::Sidebar => write!(f, "Sidebar"),
             TranscriptSource::HostApi => write!(f, "AI Host API"),
+            TranscriptSource::ArcSearch => write!(f, "Arc Search"),
             TranscriptSource::Unknown => write!(f, "Unknown"),
         }
     }

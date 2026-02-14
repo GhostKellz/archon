@@ -11,29 +11,123 @@
       <h1>Archon AI</h1>
       <p class="status" id="status">Connecting…</p>
     </header>
+
+    <!-- Tab Navigation -->
+    <nav class="tab-nav" role="tablist">
+      <button class="tab-btn active" role="tab" aria-selected="true" data-tab="chat">Chat</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="arc">Arc</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="n8n">N8N</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="tools">Tools</button>
+    </nav>
+
     <main>
-      <form id="chat-form">
-        <label class="sr-only" for="prompt">Prompt</label>
-        <textarea id="prompt" name="prompt" rows="4" placeholder="Ask Archon anything…" required></textarea>
-        <div class="attachment-control">
-          <label for="attachments">Attach media</label>
-          <input type="file" id="attachments" name="attachments" multiple accept="image/*,audio/*" />
-          <ul id="attachment-list" class="attachment-list" aria-live="polite"></ul>
+      <!-- Chat Tab -->
+      <section id="tab-chat" class="tab-panel active" role="tabpanel">
+        <form id="chat-form">
+          <label class="sr-only" for="prompt">Prompt</label>
+          <textarea id="prompt" name="prompt" rows="4" placeholder="Ask Archon anything…" required></textarea>
+          <div class="attachment-control">
+            <label for="attachments">Attach media</label>
+            <input type="file" id="attachments" name="attachments" multiple accept="image/*,audio/*" />
+            <ul id="attachment-list" class="attachment-list" aria-live="polite"></ul>
+          </div>
+          <div class="controls">
+            <select id="provider" name="provider">
+              <option value="">Default provider</option>
+            </select>
+            <button type="button" id="voice-btn" class="voice-btn" title="Voice input (hold to speak)">
+              <span class="voice-icon">🎤</span>
+            </button>
+            <button type="submit">Send</button>
+          </div>
+          <div id="provider-capabilities" class="provider-capabilities" aria-live="polite"></div>
+          <div id="conversation-context" class="conversation-context" hidden>
+            <span id="conversation-context-label"></span>
+            <button type="button" id="conversation-reset">Start new thread</button>
+          </div>
+        </form>
+        <section id="log" aria-live="polite"></section>
+      </section>
+
+      <!-- Arc Search Tab (Perplexity-like) -->
+      <section id="tab-arc" class="tab-panel" role="tabpanel" hidden>
+        <form id="arc-form" class="arc-form">
+          <div class="arc-input-wrapper">
+            <label class="sr-only" for="arc-query">Search query</label>
+            <textarea id="arc-query" name="query" rows="2" placeholder="Ask Arc anything… I'll search the web and cite my sources."></textarea>
+            <button type="submit" class="arc-submit" title="Search">
+              <span class="arc-icon">🔍</span>
+            </button>
+          </div>
+          <div class="arc-options">
+            <select id="arc-ai-provider" name="ai_provider">
+              <option value="">Default AI</option>
+            </select>
+            <span class="arc-badge">Web Search + AI</span>
+          </div>
+        </form>
+        <div id="arc-status" class="arc-status" hidden></div>
+        <section id="arc-results" class="arc-results" aria-live="polite">
+          <div class="arc-placeholder">
+            <div class="arc-placeholder-icon">🌐</div>
+            <p>Arc searches the web and answers with sources.</p>
+            <p class="arc-hint">Try: "What's new in Rust 2024?" or "Latest AI news"</p>
+          </div>
+        </section>
+      </section>
+
+      <!-- N8N Workflows Tab -->
+      <section id="tab-n8n" class="tab-panel" role="tabpanel" hidden>
+        <div class="n8n-header">
+          <div class="section-header">
+            <h2>Workflows</h2>
+            <button type="button" id="n8n-refresh" class="btn-icon" title="Refresh workflows">↻</button>
+          </div>
+          <p class="status" id="n8n-status">Loading workflows…</p>
         </div>
-        <div class="controls">
-          <select id="provider" name="provider">
-            <option value="">Default provider</option>
-          </select>
-          <button type="submit">Send</button>
+
+        <div id="n8n-workflows" class="n8n-workflow-list">
+          <div class="n8n-placeholder">
+            <div class="n8n-placeholder-icon">⚡</div>
+            <p>Connect your N8N instance to automate workflows.</p>
+            <p class="n8n-hint">Configure in <code>~/.config/archon/config.json</code></p>
+          </div>
         </div>
-        <div id="provider-capabilities" class="provider-capabilities" aria-live="polite"></div>
-        <div id="conversation-context" class="conversation-context" hidden>
-          <span id="conversation-context-label"></span>
-          <button type="button" id="conversation-reset">Start new thread</button>
+
+        <div id="n8n-execution" class="n8n-execution" hidden>
+          <div class="section-header">
+            <h3>Execution Result</h3>
+            <button type="button" id="n8n-close-execution" class="btn-icon" title="Close">×</button>
+          </div>
+          <div id="n8n-execution-content" class="n8n-execution-content"></div>
         </div>
-      </form>
-      <section id="log" aria-live="polite"></section>
-      <section id="metrics" class="data-section">
+
+        <div class="n8n-quick-actions">
+          <h3>Quick Actions</h3>
+          <div class="n8n-action-grid">
+            <button type="button" class="n8n-action" data-action="summarize-page" title="Summarize current page">
+              <span class="n8n-action-icon">📄</span>
+              <span>Summarize Page</span>
+            </button>
+            <button type="button" class="n8n-action" data-action="extract-links" title="Extract all links">
+              <span class="n8n-action-icon">🔗</span>
+              <span>Extract Links</span>
+            </button>
+            <button type="button" class="n8n-action" data-action="screenshot" title="Capture screenshot">
+              <span class="n8n-action-icon">📸</span>
+              <span>Screenshot</span>
+            </button>
+            <button type="button" class="n8n-action" data-action="save-to-notion" title="Save to Notion (requires N8N)">
+              <span class="n8n-action-icon">📝</span>
+              <span>Save to Notion</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Tools Tab -->
+      <section id="tab-tools" class="tab-panel" role="tabpanel" hidden>
+        <section id="metrics" class="data-section">
         <div class="section-header">
           <h2>Provider metrics</h2>
           <button type="button" id="refresh-metrics" data-persist="true">Refresh</button>
@@ -90,6 +184,31 @@
         </form>
         <section id="tool-log" class="tool-log" aria-live="polite"></section>
       </section>
+      <section id="settings" class="data-section">
+        <div class="section-header">
+          <h2>Appearance</h2>
+        </div>
+        <div class="settings-group">
+          <label for="theme-select">Theme</label>
+          <select id="theme-select" name="theme">
+            <optgroup label="Tokyo Night">
+              <option value="tokyonight" selected>Tokyo Night</option>
+              <option value="tokyonight-storm">Tokyo Night Storm</option>
+              <option value="tokyonight-moon">Tokyo Night Moon</option>
+            </optgroup>
+            <optgroup label="Alternative">
+              <option value="dracula">Dracula</option>
+              <option value="nord">Nord</option>
+              <option value="rosepine">Rosé Pine</option>
+              <option value="rosepine-moon">Rosé Pine Moon</option>
+            </optgroup>
+            <optgroup label="Light">
+              <option value="archon-light">Archon Light</option>
+            </optgroup>
+          </select>
+        </div>
+      </section>
+      </section><!-- /tab-tools -->
     </main>
     <footer>
       <small>Requests route through the native <code>archon_host</code> service.</small>

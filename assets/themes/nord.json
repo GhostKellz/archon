@@ -1,0 +1,31 @@
+{
+  "name": "nord",
+  "label": "Nord",
+  "version": "1.0.0",
+  "author": "Archon Project",
+  "description": "An arctic, north-bluish color palette inspired by the Nord theme. Clean, minimal, and frosty.",
+  "colors": {
+    "background": {
+      "dim": "#242933",
+      "surface": "#2e3440",
+      "floating": "#3b4252"
+    },
+    "foreground": {
+      "primary": "#eceff4",
+      "muted": "#d8dee9",
+      "subtle": "#4c566a"
+    },
+    "accents": {
+      "primary": "#88c0d0",
+      "secondary": "#81a1c1",
+      "mint": "#a3be8c",
+      "ghost": "#5e81ac"
+    },
+    "status": {
+      "info": "#81a1c1",
+      "success": "#a3be8c",
+      "warning": "#ebcb8b",
+      "danger": "#bf616a"
+    }
+  }
+}
