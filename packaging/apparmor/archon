@@ -1,0 +1,182 @@
+# AppArmor profile for Archon browser launcher
+# Install to /etc/apparmor.d/archon
+
+#include <tunables/global>
+
+profile archon /usr/bin/archon flags=(enforce) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/ssl_certs>
+  #include <abstractions/fonts>
+
+  # Archon binary
+  /usr/bin/archon mr,
+
+  # Network access for AI providers and DNS
+  network inet stream,
+  network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
+  network unix stream,
+
+  # Config and data directories
+  owner @{HOME}/.config/Archon/ rw,
+  owner @{HOME}/.config/Archon/** rw,
+  owner @{HOME}/.local/share/Archon/ rw,
+  owner @{HOME}/.local/share/Archon/** rw,
+  owner @{HOME}/.cache/Archon/ rw,
+  owner @{HOME}/.cache/Archon/** rw,
+
+  # Browser profile directories
+  owner @{HOME}/.local/share/Archon/profiles/ rw,
+  owner @{HOME}/.local/share/Archon/profiles/** rw,
+
+  # Transcript storage
+  owner @{HOME}/.local/share/Archon/transcripts/ rw,
+  owner @{HOME}/.local/share/Archon/transcripts/** rw,
+
+  # Telemetry directory (opt-in)
+  owner @{HOME}/.local/share/Archon/telemetry/ rw,
+  owner @{HOME}/.local/share/Archon/telemetry/** rw,
+
+  # System directories (read-only)
+  /usr/share/archon/ r,
+  /usr/share/archon/** r,
+  /etc/archon/ r,
+  /etc/archon/** r,
+
+  # Theme assets
+  /usr/share/archon/themes/ r,
+  /usr/share/archon/themes/** r,
+
+  # Chromium/Firefox access (for browser control)
+  /usr/bin/chromium* ix,
+  /usr/bin/ungoogled-chromium* ix,
+  /usr/bin/firefox* ix,
+  /usr/lib/chromium/** mr,
+  /usr/lib/firefox/** mr,
+
+  # GPU/graphics access
+  /dev/dri/ r,
+  /dev/dri/** rw,
+  /dev/nvidia* rw,
+  /sys/devices/pci**/drm/** r,
+
+  # Wayland/X11
+  owner @{HOME}/.Xauthority r,
+  /run/user/*/wayland-* rw,
+  @{run}/user/[0-9]*/wayland-* rw,
+
+  # DBus access
+  dbus send bus=session,
+  dbus receive bus=session,
+
+  # Proc filesystem
+  @{PROC}/ r,
+  @{PROC}/@{pid}/ r,
+  @{PROC}/@{pid}/fd/ r,
+  @{PROC}/@{pid}/stat r,
+  @{PROC}/@{pid}/cmdline r,
+  @{PROC}/sys/kernel/random/uuid r,
+
+  # Systemd user units
+  @{run}/user/[0-9]*/systemd/ r,
+  @{run}/user/[0-9]*/systemd/** rw,
+
+  # Temporary files
+  owner /tmp/archon-* rw,
+  owner /tmp/archon-*/** rw,
+  /tmp/.X11-unix/* rw,
+
+  # Native messaging socket
+  owner @{run}/user/[0-9]*/archon-host.sock rw,
+
+  # Deny sensitive paths
+  deny /etc/shadow r,
+  deny /etc/passwd w,
+  deny /etc/sudoers* r,
+  deny @{HOME}/.ssh/ rw,
+  deny @{HOME}/.ssh/** rw,
+  deny @{HOME}/.gnupg/ rw,
+  deny @{HOME}/.gnupg/** rw,
+  deny @{HOME}/.aws/ rw,
+  deny @{HOME}/.aws/** rw,
+  deny @{HOME}/.kube/ rw,
+  deny @{HOME}/.kube/** rw,
+
+  # Deny kernel module loading
+  deny /sbin/modprobe x,
+  deny /sbin/insmod x,
+  deny /sbin/rmmod x,
+
+  # Capabilities
+  capability sys_ptrace,
+  capability net_bind_service,
+}
+
+# Profile for archon-host (native messaging)
+profile archon-host /usr/bin/archon_host flags=(enforce) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/ssl_certs>
+
+  /usr/bin/archon_host mr,
+
+  # Network for AI API calls
+  network inet stream,
+  network inet6 stream,
+  network unix stream,
+
+  # Config
+  owner @{HOME}/.config/Archon/ rw,
+  owner @{HOME}/.config/Archon/** rw,
+
+  # Socket
+  owner @{run}/user/[0-9]*/archon-host.sock rw,
+
+  # Logging
+  owner @{HOME}/.local/share/Archon/logs/ rw,
+  owner @{HOME}/.local/share/Archon/logs/** rw,
+
+  # Deny sensitive paths
+  deny @{HOME}/.ssh/** rw,
+  deny @{HOME}/.gnupg/** rw,
+}
+
+# Profile for ghostdns (DNS daemon)
+profile ghostdns /usr/bin/ghostdns flags=(enforce) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/ssl_certs>
+
+  /usr/bin/ghostdns mr,
+
+  # Network for DNS
+  network inet dgram,
+  network inet stream,
+  network inet6 dgram,
+  network inet6 stream,
+
+  # Bind to DNS ports (requires capability or privilege)
+  capability net_bind_service,
+
+  # Config
+  owner @{HOME}/.config/Archon/ghostdns.toml r,
+  /etc/archon/ghostdns.toml r,
+
+  # Cache
+  owner @{HOME}/.cache/Archon/dns/ rw,
+  owner @{HOME}/.cache/Archon/dns/** rw,
+
+  # Certificates for DoH/DoT
+  /etc/ssl/certs/** r,
+  owner @{HOME}/.config/Archon/certs/ r,
+  owner @{HOME}/.config/Archon/certs/** r,
+
+  # Systemd notify
+  @{run}/systemd/notify w,
+
+  # Deny everything else
+  deny @{HOME}/.ssh/** rw,
+  deny @{HOME}/.gnupg/** rw,
+}

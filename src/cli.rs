@@ -330,7 +330,7 @@ fn print_transcripts(launcher: &Launcher, limit: usize) -> Result<()> {
     );
     println!(
         "  max_total_bytes : {}",
-        describe_option(retention.max_total_bytes, |value| format_bytes(value))
+        describe_option(retention.max_total_bytes, format_bytes)
     );
     println!(
         "  max_age         : {}",
@@ -392,6 +392,13 @@ fn print_diagnostics(launcher: &Launcher) -> Result<()> {
         crypto,
         ghostdns,
         ui,
+        vision,
+        voice,
+        summarize,
+        research,
+        automation,
+        ipfs,
+        ens,
         profile_badges,
         telemetry,
     } = report;
@@ -762,6 +769,88 @@ fn print_diagnostics(launcher: &Launcher) -> Result<()> {
     if let Some(err) = ui.wayland_error {
         println!("    - wayland_error    : {err}");
     }
+
+    println!("\n  Vision:");
+    println!("    - enabled          : {}", vision.enabled);
+    println!("    - ocr_enabled      : {}", vision.ocr_enabled);
+    if vision.vision_providers.is_empty() {
+        println!("    - providers        : (none available)");
+    } else {
+        println!("    - providers        : {}", vision.vision_providers.join(", "));
+    }
+    for issue in &vision.issues {
+        println!("    - ⚠ {issue}");
+    }
+
+    println!("\n  Voice:");
+    println!("    - enabled          : {}", voice.enabled);
+    println!("    - tts_enabled      : {}", voice.tts_enabled);
+    println!("    - stt_enabled      : {}", voice.stt_enabled);
+    if voice.available_providers.is_empty() {
+        println!("    - providers        : (none available)");
+    } else {
+        println!("    - providers        : {}", voice.available_providers.join(", "));
+    }
+    if let Some(voice_name) = &voice.default_voice {
+        println!("    - default_voice    : {}", voice_name);
+    }
+    for issue in &voice.issues {
+        println!("    - ⚠ {issue}");
+    }
+
+    println!("\n  Summarization:");
+    println!("    - enabled          : {}", summarize.enabled);
+    println!("    - default_style    : {}", summarize.default_style);
+    println!("    - max_content_len  : {}", summarize.max_content_length);
+    println!("    - cache_enabled    : {}", summarize.cache_enabled);
+    for issue in &summarize.issues {
+        println!("    - ⚠ {issue}");
+    }
+
+    println!("\n  Research:");
+    println!("    - enabled          : {}", research.enabled);
+    println!("    - default_depth    : {}", research.default_depth);
+    println!("    - max_sources      : {}", research.max_sources);
+    println!("    - search_available : {}", research.search_available);
+    for issue in &research.issues {
+        println!("    - ⚠ {issue}");
+    }
+
+    println!("\n  Automation:");
+    println!("    - enabled          : {}", automation.enabled);
+    println!("    - require_confirm  : {}", automation.require_confirmation);
+    println!("    - sandbox_mode     : {}", automation.sandbox_mode);
+    println!("    - allowed_domains  : {}", automation.allowed_domains_count);
+    println!("    - blocked_domains  : {}", automation.blocked_domains_count);
+    println!("    - actions_session  : {}", automation.actions_this_session);
+    for issue in &automation.issues {
+        println!("    - ⚠ {issue}");
+    }
+
+    println!("\n  IPFS:");
+    println!("    - enabled          : {}", ipfs.enabled);
+    let local_status = if ipfs.local_node_available { "available" } else { "unavailable" };
+    println!("    - local_node       : {}", local_status);
+    println!("    - prefer_local     : {}", ipfs.prefer_local);
+    println!("    - auto_pin         : {}", ipfs.auto_pin);
+    println!("    - ipns_cache_size  : {}", ipfs.ipns_cache_size);
+    if let Some(api) = &ipfs.api_endpoint {
+        println!("    - api_endpoint     : {}", api);
+    }
+    if let Some(local_gw) = &ipfs.local_gateway {
+        println!("    - local_gateway    : {}", local_gw);
+    }
+    println!("    - public_gateway   : {}", ipfs.public_gateway);
+
+    println!("\n  ENS:");
+    println!("    - enabled          : {}", ens.enabled);
+    println!("    - omnibox_enabled  : {}", ens.omnibox_enabled);
+    println!("    - show_badge       : {}", ens.show_badge);
+    println!("    - badge_style      : {:?}", ens.badge_style);
+    println!("    - cache_enabled    : {}", ens.cache_enabled);
+    println!("    - cache_size       : {}", ens.cache_size);
+    println!("    - supported_tlds   : {}", ens.supported_tlds.join(", "));
+
     Ok(())
 }
 
@@ -904,11 +993,10 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
-    if let Some(target) = cli.target.clone() {
-        if handle_target(&mut launcher, &cli, &target)? {
+    if let Some(target) = cli.target.clone()
+        && handle_target(&mut launcher, &cli, &target)? {
             return Ok(());
         }
-    }
 
     if cli.chat.is_some() || !cli.chat_attachments.is_empty() {
         let prompt_text = cli.chat.clone().unwrap_or_default();
@@ -1211,17 +1299,15 @@ fn determine_ens_destination(
         return Some(append_remainder(gateway, remainder));
     }
 
-    if let Some(url) = resolution.records.get("url") {
-        if is_http_url(url) {
+    if let Some(url) = resolution.records.get("url")
+        && is_http_url(url) {
             return Some(append_remainder(url, remainder));
         }
-    }
 
-    if let Some(contenthash) = resolution.records.get("contenthash") {
-        if is_http_url(contenthash) {
+    if let Some(contenthash) = resolution.records.get("contenthash")
+        && is_http_url(contenthash) {
             return Some(append_remainder(contenthash, remainder));
         }
-    }
 
     if resolution.name.ends_with(".eth") {
         let stem = resolution.name.trim_end_matches(".eth");

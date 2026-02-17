@@ -53,6 +53,7 @@ impl ProfileStore {
         self.create_profile(name)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn record_launch(
         &mut self,
         profile: &ProfileRecord,

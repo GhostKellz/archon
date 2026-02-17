@@ -157,11 +157,10 @@ impl UiShell {
                 return Some(name);
             }
         }
-        if let Ok(display) = env::var("WAYLAND_DISPLAY") {
-            if display.to_ascii_lowercase().contains("weston") {
+        if let Ok(display) = env::var("WAYLAND_DISPLAY")
+            && display.to_ascii_lowercase().contains("weston") {
                 return Some("Weston".into());
             }
-        }
         None
     }
 
@@ -202,11 +201,10 @@ impl UiShell {
                     continue;
                 }
                 let vendor_path = entry.path().join("device/vendor");
-                if let Ok(vendor) = fs::read_to_string(&vendor_path) {
-                    if let Some(vendor) = GpuVendor::from_pci_id(vendor.trim()) {
+                if let Ok(vendor) = fs::read_to_string(&vendor_path)
+                    && let Some(vendor) = GpuVendor::from_pci_id(vendor.trim()) {
                         return vendor;
                     }
-                }
             }
         }
 
@@ -263,11 +261,10 @@ impl UiShell {
             || Path::new("/sys/module/nvidia_drm").exists()
             || Path::new("/proc/driver/nvidia/version").exists()
         {
-            if let Some(line) = Self::read_first_line("/proc/driver/nvidia/version") {
-                if line.to_ascii_lowercase().contains("open kernel module") {
+            if let Some(line) = Self::read_first_line("/proc/driver/nvidia/version")
+                && line.to_ascii_lowercase().contains("open kernel module") {
                     return NvidiaDriverKind::OpenKernel;
                 }
-            }
             return NvidiaDriverKind::Proprietary;
         }
 
@@ -306,7 +303,7 @@ impl UiShell {
                 .map(|value| value.eq_ignore_ascii_case("wayland"))
                 .unwrap_or(false);
             let compositor_prefers_wayland = compositor
-                .map(|value| Self::compositor_prefers_wayland(value))
+                .map(Self::compositor_prefers_wayland)
                 .unwrap_or(false);
 
             if session_is_wayland
@@ -319,11 +316,10 @@ impl UiShell {
             return Some("gl".into());
         }
 
-        if let Some(name) = compositor {
-            if name.eq_ignore_ascii_case("hyprland") {
+        if let Some(name) = compositor
+            && name.eq_ignore_ascii_case("hyprland") {
                 return Some("vulkan".into());
             }
-        }
 
         None
     }
@@ -348,9 +344,7 @@ impl UiShell {
     }
 
     fn detect_angle_library(backend: Option<&str>) -> Option<PathBuf> {
-        if backend.is_none() {
-            return None;
-        }
+        backend?;
 
         if let Ok(path) = env::var("ARCHON_ANGLE_LIBRARY") {
             let candidate = PathBuf::from(path);

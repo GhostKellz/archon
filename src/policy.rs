@@ -94,6 +94,7 @@ pub fn load_policy(path: &Path) -> Result<Value> {
 }
 
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct PolicySummary {
     pub doh_mode: Option<String>,
     pub doh_template: Option<String>,
@@ -106,21 +107,6 @@ pub struct PolicySummary {
     pub remote_debugging_allowed: Option<bool>,
 }
 
-impl Default for PolicySummary {
-    fn default() -> Self {
-        Self {
-            doh_mode: None,
-            doh_template: None,
-            safe_browsing_level: None,
-            password_manager_enabled: None,
-            leak_detection_enabled: None,
-            search_suggest_enabled: None,
-            block_external_extensions: None,
-            extension_forcelist: Vec::new(),
-            remote_debugging_allowed: None,
-        }
-    }
-}
 
 pub fn summarize_policy(value: &Value) -> PolicySummary {
     let mut summary = PolicySummary::default();
@@ -144,14 +130,13 @@ pub fn summarize_policy(value: &Value) -> PolicySummary {
             map.get("BlockExternalExtensions").and_then(|v| v.as_bool());
         summary.remote_debugging_allowed =
             map.get("RemoteDebuggingAllowed").and_then(|v| v.as_bool());
-        if let Some(list) = map.get("ExtensionInstallForcelist") {
-            if let Some(array) = list.as_array() {
+        if let Some(list) = map.get("ExtensionInstallForcelist")
+            && let Some(array) = list.as_array() {
                 summary.extension_forcelist = array
                     .iter()
                     .filter_map(|entry| entry.as_str().map(|s| s.to_string()))
                     .collect();
             }
-        }
     }
     summary
 }

@@ -193,7 +193,7 @@ fn create_trace_file(service: &str, directory: &Path) -> Result<(std::fs::File, 
 
     let file = OpenOptions::new()
         .create(true)
-        .write(true)
+        
         .append(true)
         .open(&candidate)
         .with_context(|| format!("Failed to open trace file {}", candidate.display()))?;
@@ -554,8 +554,8 @@ fn maybe_rotate(path: &Path, limit: Option<u64>) -> Result<()> {
         return Ok(());
     };
 
-    if let Ok(metadata) = fs::metadata(path) {
-        if metadata.len() >= limit {
+    if let Ok(metadata) = fs::metadata(path)
+        && metadata.len() >= limit {
             let timestamp = Utc::now().format("%Y%m%dT%H%M%SZ");
             let file_name = path
                 .file_name()
@@ -574,7 +574,6 @@ fn maybe_rotate(path: &Path, limit: Option<u64>) -> Result<()> {
                 )
             })?;
         }
-    }
 
     Ok(())
 }

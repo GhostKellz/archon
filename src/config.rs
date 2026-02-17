@@ -30,40 +30,36 @@ impl std::fmt::Display for EngineKind {
 /// Modes the launcher can request from engines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum LaunchMode {
     /// Hardened browsing with maximum privacy.
+    #[default]
     Privacy,
     /// AI-assisted browsing session.
     Ai,
 }
 
-impl Default for LaunchMode {
-    fn default() -> Self {
-        LaunchMode::Privacy
-    }
-}
 
 /// Policy presets applied to Chromium Max.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum PolicyProfile {
     /// Balanced defaults retaining select convenience features.
     Default,
     /// Maximum privacy posture with aggressive hardening (current default).
+    #[default]
     Hardened,
 }
 
-impl Default for PolicyProfile {
-    fn default() -> Self {
-        PolicyProfile::Hardened
-    }
-}
 
 /// Available AI provider integrations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
+#[derive(Default)]
 pub enum AiProviderKind {
     /// Local Ollama instance (default, no API key required)
     #[serde(rename = "local-ollama")]
+    #[default]
     LocalOllama,
     /// LiteLLM proxy - unified API for 100+ LLM providers
     #[serde(rename = "litellm")]
@@ -136,11 +132,6 @@ impl AiProviderKind {
     }
 }
 
-impl Default for AiProviderKind {
-    fn default() -> Self {
-        AiProviderKind::LocalOllama
-    }
-}
 
 impl std::fmt::Display for AiProviderKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -161,24 +152,19 @@ impl std::fmt::Display for AiProviderKind {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct AiProviderCapabilities {
     pub vision: bool,
     pub audio: bool,
 }
 
-impl Default for AiProviderCapabilities {
-    fn default() -> Self {
-        Self {
-            vision: false,
-            audio: false,
-        }
-    }
-}
 
 /// Families of supported crypto networks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum CryptoNetworkKind {
+    #[default]
     Ethereum,
     Solana,
     Bitcoin,
@@ -194,11 +180,6 @@ impl CryptoNetworkKind {
     }
 }
 
-impl Default for CryptoNetworkKind {
-    fn default() -> Self {
-        CryptoNetworkKind::Ethereum
-    }
-}
 
 impl std::fmt::Display for CryptoNetworkKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -249,6 +230,20 @@ pub struct LaunchSettings {
     #[serde(default)]
     pub telemetry: TelemetrySettings,
     #[serde(default)]
+    pub vision: VisionSettings,
+    #[serde(default)]
+    pub voice: VoiceSettings,
+    #[serde(default)]
+    pub summarize: SummarizeSettings,
+    #[serde(default)]
+    pub research: ResearchSettings,
+    #[serde(default)]
+    pub automation: AutomationSettings,
+    #[serde(default)]
+    pub ipfs: IpfsSettings,
+    #[serde(default)]
+    pub ens: EnsSettings,
+    #[serde(default)]
     pub policy_profile: PolicyProfile,
     #[serde(default)]
     pub first_run_complete: bool,
@@ -277,6 +272,13 @@ impl Default for LaunchSettings {
             n8n: N8nSettings::default(),
             arc: ArcSearchSettings::default(),
             telemetry: TelemetrySettings::default(),
+            vision: VisionSettings::default(),
+            voice: VoiceSettings::default(),
+            summarize: SummarizeSettings::default(),
+            research: ResearchSettings::default(),
+            automation: AutomationSettings::default(),
+            ipfs: IpfsSettings::default(),
+            ens: EnsSettings::default(),
             policy_profile: PolicyProfile::default(),
             first_run_complete: false,
         }
@@ -767,6 +769,7 @@ impl Default for GhostDnsSettings {
 
 /// Model Context Protocol integration settings (Docker, n8n, etc.).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct McpSettings {
     #[serde(default)]
     pub docker: Option<McpDockerSettings>,
@@ -774,17 +777,10 @@ pub struct McpSettings {
     pub connectors: Vec<McpConnector>,
 }
 
-impl Default for McpSettings {
-    fn default() -> Self {
-        Self {
-            docker: None,
-            connectors: Vec::new(),
-        }
-    }
-}
 
 /// N8N workflow automation integration settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct N8nSettings {
     /// Whether N8N integration is enabled.
     #[serde(default)]
@@ -797,15 +793,6 @@ pub struct N8nSettings {
     pub instances: Vec<N8nInstanceConfig>,
 }
 
-impl Default for N8nSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            default_instance: None,
-            instances: Vec::new(),
-        }
-    }
-}
 
 /// Configuration for a single N8N instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -936,8 +923,10 @@ impl ArcSearchProviderConfig {
 /// Supported search providers for Arc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum ArcSearchProviderKind {
     /// SearXNG self-hosted metasearch.
+    #[default]
     SearXng,
     /// Brave Search API.
     Brave,
@@ -947,11 +936,6 @@ pub enum ArcSearchProviderKind {
     DuckDuckGo,
 }
 
-impl Default for ArcSearchProviderKind {
-    fn default() -> Self {
-        ArcSearchProviderKind::SearXng
-    }
-}
 
 /// Opt-in telemetry configuration shared across Archon services.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1033,16 +1017,13 @@ pub struct TraceOtlpHeader {
 /// Transport protocols supported for OTLP trace export.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum TraceOtlpProtocol {
+    #[default]
     Grpc,
     HttpProtobuf,
 }
 
-impl Default for TraceOtlpProtocol {
-    fn default() -> Self {
-        TraceOtlpProtocol::Grpc
-    }
-}
 
 /// Docker-specific MCP descriptors so Archon can orchestrate sidecars.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1230,6 +1211,7 @@ impl Default for UiSettings {
 
 /// Engine-specific tuning parameters.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct EngineSpecificConfig {
     /// Optional explicit binary path.
     pub binary_path: Option<PathBuf>,
@@ -1277,18 +1259,10 @@ impl EngineSpecificConfig {
     }
 }
 
-impl Default for EngineSpecificConfig {
-    fn default() -> Self {
-        Self {
-            binary_path: None,
-            extra_args: Vec::new(),
-            env: Vec::new(),
-        }
-    }
-}
 
 /// Key-value environment variable pair persisted in config.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct EnvVar {
     pub key: String,
     pub value: String,
@@ -1300,14 +1274,6 @@ impl EnvVar {
     }
 }
 
-impl Default for EnvVar {
-    fn default() -> Self {
-        Self {
-            key: String::new(),
-            value: String::new(),
-        }
-    }
-}
 
 /// A single launch request coming from CLI or API.
 #[derive(Debug, Clone)]
@@ -1346,4 +1312,453 @@ pub fn default_config_path() -> Result<PathBuf> {
     let dirs = ProjectDirs::from("sh", "ghostkellz", "Archon")
         .context("Unable to resolve platform config directory")?;
     Ok(dirs.config_dir().join("config.json"))
+}
+
+// ============================================================================
+// Vision Settings
+// ============================================================================
+
+/// Vision and screenshot analysis settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VisionSettings {
+    /// Whether vision analysis is enabled.
+    #[serde(default = "bool_true")]
+    pub enabled: bool,
+    /// Default AI provider for vision tasks (must have vision capability).
+    #[serde(default)]
+    pub default_provider: Option<String>,
+    /// Maximum image size in megabytes.
+    #[serde(default = "VisionSettings::default_max_image_size")]
+    pub max_image_size_mb: f32,
+    /// Supported image formats.
+    #[serde(default = "VisionSettings::default_formats")]
+    pub supported_formats: Vec<String>,
+    /// Whether OCR extraction is enabled.
+    #[serde(default = "bool_true")]
+    pub ocr_enabled: bool,
+    /// Whether UI element analysis is enabled.
+    #[serde(default = "bool_true")]
+    pub ui_analysis_enabled: bool,
+}
+
+impl VisionSettings {
+    fn default_max_image_size() -> f32 {
+        10.0
+    }
+
+    fn default_formats() -> Vec<String> {
+        vec![
+            "png".into(),
+            "jpg".into(),
+            "jpeg".into(),
+            "webp".into(),
+            "gif".into(),
+        ]
+    }
+}
+
+impl Default for VisionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            default_provider: None,
+            max_image_size_mb: Self::default_max_image_size(),
+            supported_formats: Self::default_formats(),
+            ocr_enabled: true,
+            ui_analysis_enabled: true,
+        }
+    }
+}
+
+// ============================================================================
+// Voice Settings
+// ============================================================================
+
+/// Voice input and text-to-speech settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceSettings {
+    /// Whether voice features are enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Whether text-to-speech is enabled.
+    #[serde(default = "bool_true")]
+    pub tts_enabled: bool,
+    /// Whether speech-to-text is enabled.
+    #[serde(default = "bool_true")]
+    pub stt_enabled: bool,
+    /// Default TTS provider (openai, elevenlabs, piper, webspeech).
+    #[serde(default)]
+    pub default_tts_provider: Option<String>,
+    /// Default voice identifier.
+    #[serde(default)]
+    pub default_voice: Option<String>,
+    /// Default speaking speed (0.5 to 2.0).
+    #[serde(default = "VoiceSettings::default_speed")]
+    pub default_speed: f32,
+    /// Default output audio format.
+    #[serde(default = "VoiceSettings::default_format")]
+    pub output_format: String,
+    /// Whether to auto-play TTS responses.
+    #[serde(default)]
+    pub auto_play_responses: bool,
+}
+
+impl VoiceSettings {
+    fn default_speed() -> f32 {
+        1.0
+    }
+
+    fn default_format() -> String {
+        "mp3".into()
+    }
+}
+
+impl Default for VoiceSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tts_enabled: true,
+            stt_enabled: true,
+            default_tts_provider: None,
+            default_voice: None,
+            default_speed: Self::default_speed(),
+            output_format: Self::default_format(),
+            auto_play_responses: false,
+        }
+    }
+}
+
+// ============================================================================
+// Summarization Settings
+// ============================================================================
+
+/// Page summarization settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummarizeSettings {
+    /// Whether summarization is enabled.
+    #[serde(default = "bool_true")]
+    pub enabled: bool,
+    /// Default summarization style (bullets, paragraph, keypoints, eli5).
+    #[serde(default = "SummarizeSettings::default_style")]
+    pub default_style: String,
+    /// Maximum content length to summarize (characters).
+    #[serde(default = "SummarizeSettings::default_max_length")]
+    pub max_content_length: usize,
+    /// Whether to include metadata in summaries.
+    #[serde(default = "bool_true")]
+    pub include_metadata: bool,
+    /// Whether to cache summaries.
+    #[serde(default = "bool_true")]
+    pub cache_summaries: bool,
+    /// Cache TTL in hours.
+    #[serde(default = "SummarizeSettings::default_cache_ttl")]
+    pub cache_ttl_hours: u32,
+}
+
+impl SummarizeSettings {
+    fn default_style() -> String {
+        "bullets".into()
+    }
+
+    fn default_max_length() -> usize {
+        100_000
+    }
+
+    fn default_cache_ttl() -> u32 {
+        24
+    }
+}
+
+impl Default for SummarizeSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            default_style: Self::default_style(),
+            max_content_length: Self::default_max_length(),
+            include_metadata: true,
+            cache_summaries: true,
+            cache_ttl_hours: Self::default_cache_ttl(),
+        }
+    }
+}
+
+// ============================================================================
+// Research Settings
+// ============================================================================
+
+/// Autonomous research settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResearchSettings {
+    /// Whether research features are enabled.
+    #[serde(default = "bool_true")]
+    pub enabled: bool,
+    /// Default research depth (quick, standard, deep).
+    #[serde(default = "ResearchSettings::default_depth")]
+    pub default_depth: String,
+    /// Maximum number of sources to include.
+    #[serde(default = "ResearchSettings::default_max_sources")]
+    pub max_sources: usize,
+    /// Maximum research iterations.
+    #[serde(default = "ResearchSettings::default_max_iterations")]
+    pub max_iterations: usize,
+    /// Whether to save research sessions.
+    #[serde(default = "bool_true")]
+    pub save_sessions: bool,
+    /// Session retention in days.
+    #[serde(default = "ResearchSettings::default_retention")]
+    pub session_retention_days: u32,
+    /// Number of parallel searches to run.
+    #[serde(default = "ResearchSettings::default_parallel")]
+    pub parallel_searches: usize,
+}
+
+impl ResearchSettings {
+    fn default_depth() -> String {
+        "standard".into()
+    }
+
+    fn default_max_sources() -> usize {
+        10
+    }
+
+    fn default_max_iterations() -> usize {
+        5
+    }
+
+    fn default_retention() -> u32 {
+        30
+    }
+
+    fn default_parallel() -> usize {
+        3
+    }
+}
+
+impl Default for ResearchSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            default_depth: Self::default_depth(),
+            max_sources: Self::default_max_sources(),
+            max_iterations: Self::default_max_iterations(),
+            save_sessions: true,
+            session_retention_days: Self::default_retention(),
+            parallel_searches: Self::default_parallel(),
+        }
+    }
+}
+
+// ============================================================================
+// Automation Settings
+// ============================================================================
+
+/// Web automation and action settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutomationSettings {
+    /// Whether automation is enabled (disabled by default for safety).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Whether to require user confirmation for actions.
+    #[serde(default = "bool_true")]
+    pub require_confirmation: bool,
+    /// Domains where automation is allowed.
+    #[serde(default)]
+    pub allowed_domains: Vec<String>,
+    /// Domains where automation is blocked.
+    #[serde(default)]
+    pub blocked_domains: Vec<String>,
+    /// Maximum actions per minute (rate limiting).
+    #[serde(default = "AutomationSettings::default_rate_limit")]
+    pub max_actions_per_minute: u32,
+    /// Action timeout in seconds.
+    #[serde(default = "AutomationSettings::default_timeout")]
+    pub action_timeout_seconds: u32,
+    /// Whether to log all actions.
+    #[serde(default = "bool_true")]
+    pub log_all_actions: bool,
+    /// Sandbox mode - preview actions without executing.
+    #[serde(default = "bool_true")]
+    pub sandbox_mode: bool,
+}
+
+impl AutomationSettings {
+    fn default_rate_limit() -> u32 {
+        30
+    }
+
+    fn default_timeout() -> u32 {
+        30
+    }
+}
+
+impl Default for AutomationSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            require_confirmation: true,
+            allowed_domains: Vec::new(),
+            blocked_domains: Vec::new(),
+            max_actions_per_minute: Self::default_rate_limit(),
+            action_timeout_seconds: Self::default_timeout(),
+            log_all_actions: true,
+            sandbox_mode: true,
+        }
+    }
+}
+
+// ============================================================================
+// IPFS Settings
+// ============================================================================
+
+/// IPFS integration settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IpfsSettings {
+    /// Enable IPFS integration.
+    #[serde(default = "bool_true")]
+    pub enabled: bool,
+    /// Local IPFS API endpoint (e.g., http://127.0.0.1:5001).
+    #[serde(default = "IpfsSettings::default_api_endpoint")]
+    pub api_endpoint: Option<String>,
+    /// Public gateway URL for fallback.
+    #[serde(default = "IpfsSettings::default_public_gateway")]
+    pub public_gateway: String,
+    /// Local gateway URL.
+    #[serde(default = "IpfsSettings::default_local_gateway")]
+    pub local_gateway: Option<String>,
+    /// Prefer local gateway when available.
+    #[serde(default = "bool_true")]
+    pub prefer_local: bool,
+    /// Auto-pin resolved content.
+    #[serde(default)]
+    pub auto_pin: bool,
+    /// Pin recursively by default.
+    #[serde(default = "bool_true")]
+    pub recursive_pin: bool,
+    /// Cache IPNS resolutions.
+    #[serde(default = "bool_true")]
+    pub cache_ipns: bool,
+    /// IPNS cache TTL in seconds.
+    #[serde(default = "IpfsSettings::default_ipns_cache_ttl")]
+    pub ipns_cache_ttl_secs: u64,
+    /// Connection timeout in seconds.
+    #[serde(default = "IpfsSettings::default_timeout")]
+    pub timeout_secs: u64,
+}
+
+impl IpfsSettings {
+    fn default_api_endpoint() -> Option<String> {
+        Some("http://127.0.0.1:5001".into())
+    }
+
+    fn default_public_gateway() -> String {
+        "https://ipfs.io".into()
+    }
+
+    fn default_local_gateway() -> Option<String> {
+        Some("http://127.0.0.1:8080".into())
+    }
+
+    fn default_ipns_cache_ttl() -> u64 {
+        300 // 5 minutes
+    }
+
+    fn default_timeout() -> u64 {
+        30
+    }
+}
+
+impl Default for IpfsSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            api_endpoint: Self::default_api_endpoint(),
+            public_gateway: Self::default_public_gateway(),
+            local_gateway: Self::default_local_gateway(),
+            prefer_local: true,
+            auto_pin: false,
+            recursive_pin: true,
+            cache_ipns: true,
+            ipns_cache_ttl_secs: Self::default_ipns_cache_ttl(),
+            timeout_secs: Self::default_timeout(),
+        }
+    }
+}
+
+// ============================================================================
+// ENS Settings
+// ============================================================================
+
+/// ENS (Ethereum Name Service) integration settings.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EnsSettings {
+    /// Enable ENS resolution.
+    #[serde(default = "bool_true")]
+    pub enabled: bool,
+    /// Enable omnibox keyword support (ens:).
+    #[serde(default = "bool_true")]
+    pub omnibox_enabled: bool,
+    /// Show visual badge for ENS-resolved origins.
+    #[serde(default = "bool_true")]
+    pub show_badge: bool,
+    /// Badge style for ENS-resolved origins.
+    #[serde(default)]
+    pub badge_style: EnsBadgeStyle,
+    /// Cache resolved ENS names locally.
+    #[serde(default = "bool_true")]
+    pub cache_enabled: bool,
+    /// Cache TTL in seconds.
+    #[serde(default = "EnsSettings::default_cache_ttl")]
+    pub cache_ttl_secs: u64,
+    /// Supported TLDs for ENS resolution.
+    #[serde(default = "EnsSettings::default_tlds")]
+    pub supported_tlds: Vec<String>,
+    /// Auto-resolve ENS in URL bar.
+    #[serde(default = "bool_true")]
+    pub auto_resolve: bool,
+}
+
+impl EnsSettings {
+    fn default_cache_ttl() -> u64 {
+        900 // 15 minutes
+    }
+
+    fn default_tlds() -> Vec<String> {
+        vec![
+            "eth".into(),
+            "xyz".into(),
+            "luxe".into(),
+            "kred".into(),
+            "art".into(),
+        ]
+    }
+}
+
+impl Default for EnsSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            omnibox_enabled: true,
+            show_badge: true,
+            badge_style: EnsBadgeStyle::default(),
+            cache_enabled: true,
+            cache_ttl_secs: Self::default_cache_ttl(),
+            supported_tlds: Self::default_tlds(),
+            auto_resolve: true,
+        }
+    }
+}
+
+/// Badge style for ENS-resolved origins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EnsBadgeStyle {
+    /// Minimal badge with ENS icon.
+    #[default]
+    Minimal,
+    /// Badge showing resolved name.
+    Full,
+    /// Badge with ENS name and address.
+    Detailed,
+    /// No badge (but still resolved).
+    Hidden,
 }

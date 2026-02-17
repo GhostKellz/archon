@@ -312,8 +312,8 @@ impl DnsCache {
             return Ok(None);
         }
 
-        if let Some(parent) = Path::new(path).parent() {
-            if !parent.exists() {
+        if let Some(parent) = Path::new(path).parent()
+            && !parent.exists() {
                 std::fs::create_dir_all(parent).with_context(|| {
                     format!(
                         "Failed to create GhostDNS cache directory {}",
@@ -321,7 +321,6 @@ impl DnsCache {
                     )
                 })?;
             }
-        }
 
         let connection = Connection::open(path)
             .with_context(|| format!("Failed to open GhostDNS cache at {path}"))?;
@@ -361,12 +360,12 @@ impl DnsCache {
             let row: Option<(Vec<u8>, i64)> = {
                 let mut stmt = conn
                     .prepare("SELECT response, expires_at FROM dns_cache WHERE cache_key = ?1")?;
-                let row = stmt
+                
+                stmt
                     .query_row(params![storage_key.as_str()], |row| {
                         Ok((row.get(0)?, row.get(1)?))
                     })
-                    .optional()?;
-                row
+                    .optional()?
             };
 
             if let Some((response, expires_at)) = row {
@@ -751,7 +750,7 @@ impl IpfsGateway {
         let headers = response.headers().clone();
         let stream = response
             .bytes_stream()
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))
+            .map_err(io::Error::other)
             .map_ok(|chunk| chunk);
         let body = Body::from_stream(stream);
 
@@ -782,13 +781,12 @@ impl IpfsGateway {
             header::HeaderName::from_static(HEADER_X_CONTENT_TYPE_OPTIONS),
             HeaderValue::from_static("nosniff"),
         );
-        if let Some(name) = filename {
-            if let Ok(value) = HeaderValue::from_str(&format!("inline; filename=\"{}\"", name)) {
+        if let Some(name) = filename
+            && let Ok(value) = HeaderValue::from_str(&format!("inline; filename=\"{}\"", name)) {
                 reply
                     .headers_mut()
                     .insert(header::CONTENT_DISPOSITION, value);
             }
-        }
 
         Ok(reply)
     }
@@ -1572,7 +1570,7 @@ async fn resolve_dns_payload(
     }
 
     let cache_key = CacheKey::from_message(&request);
-    if let (Some(cache), Some(ref key)) = (state.cache.as_ref(), cache_key.as_ref()) {
+    if let (Some(cache), Some(key)) = (state.cache.as_ref(), cache_key.as_ref()) {
         match cache.lookup(key).await {
             Ok(Some(bytes)) => {
                 state.metrics.inc_cache_hit();
@@ -1628,11 +1626,10 @@ async fn store_cache_entry(
     bytes: &[u8],
     kind: CacheEntryKind,
 ) {
-    if let (Some(cache), Some(key)) = (cache, key) {
-        if let Err(err) = cache.store(key.clone(), bytes.to_vec(), kind).await {
+    if let (Some(cache), Some(key)) = (cache, key)
+        && let Err(err) = cache.store(key.clone(), bytes.to_vec(), kind).await {
             warn!(error = %err, "Failed to store DNS cache entry");
         }
-    }
 }
 
 fn classify_response_for_cache(bytes: &[u8]) -> Option<CacheEntryKind> {
@@ -2322,14 +2319,13 @@ fn dns_response(bytes: Vec<u8>) -> Response {
 fn extract_get_payload(query: &str) -> Result<Vec<u8>, DohResponseError> {
     for pair in query.split('&') {
         let mut parts = pair.split('=');
-        if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
-            if key == "dns" {
+        if let (Some(key), Some(value)) = (parts.next(), parts.next())
+            && key == "dns" {
                 let decoded = URL_SAFE_NO_PAD
                     .decode(value)
                     .map_err(|_| DohResponseError::bad_request("invalid base64 payload"))?;
                 return Ok(decoded);
             }
-        }
     }
     Err(DohResponseError::bad_request("missing dns query parameter"))
 }
@@ -2700,12 +2696,11 @@ fn apply_ecs_policy(message: &mut Message, security: &SecuritySection) -> bool {
         return false;
     }
 
-    if let Some(edns) = message.extensions_mut().as_mut() {
-        if edns.option(EdnsCode::Subnet).is_some() {
+    if let Some(edns) = message.extensions_mut().as_mut()
+        && edns.option(EdnsCode::Subnet).is_some() {
             edns.options_mut().remove(EdnsCode::Subnet);
             return true;
         }
-    }
 
     false
 }

@@ -1,0 +1,180 @@
+# SELinux Type Enforcement Policy for Archon
+# Compile with: checkmodule -M -m -o archon.mod archon.te
+# Package with: semodule_package -o archon.pp -m archon.mod
+# Install with: semodule -i archon.pp
+
+policy_module(archon, 1.0.0)
+
+########################################
+#
+# Declarations
+#
+
+# Archon launcher type
+type archon_t;
+type archon_exec_t;
+init_daemon_domain(archon_t, archon_exec_t)
+
+# Archon host (native messaging) type
+type archon_host_t;
+type archon_host_exec_t;
+init_daemon_domain(archon_host_t, archon_host_exec_t)
+
+# GhostDNS type
+type ghostdns_t;
+type ghostdns_exec_t;
+init_daemon_domain(ghostdns_t, ghostdns_exec_t)
+
+# Configuration files
+type archon_conf_t;
+files_config_file(archon_conf_t)
+
+# Data files
+type archon_data_t;
+files_type(archon_data_t)
+
+# Cache files
+type archon_cache_t;
+files_type(archon_cache_t)
+
+# Log files
+type archon_log_t;
+logging_log_file(archon_log_t)
+
+# Socket files
+type archon_var_run_t;
+files_pid_file(archon_var_run_t)
+
+########################################
+#
+# Archon launcher policy
+#
+
+# Allow archon to transition to itself
+allow archon_t self:fifo_file rw_fifo_file_perms;
+allow archon_t self:unix_stream_socket create_stream_socket_perms;
+allow archon_t self:unix_dgram_socket create_socket_perms;
+
+# Network access
+allow archon_t self:tcp_socket create_stream_socket_perms;
+allow archon_t self:udp_socket create_socket_perms;
+corenet_tcp_connect_http_port(archon_t)
+corenet_tcp_connect_https_port(archon_t)
+
+# Read configuration
+allow archon_t archon_conf_t:dir list_dir_perms;
+allow archon_t archon_conf_t:file read_file_perms;
+
+# Manage data files
+allow archon_t archon_data_t:dir manage_dir_perms;
+allow archon_t archon_data_t:file manage_file_perms;
+
+# Manage cache
+allow archon_t archon_cache_t:dir manage_dir_perms;
+allow archon_t archon_cache_t:file manage_file_perms;
+
+# Write logs
+logging_log_filetrans(archon_t, archon_log_t, file)
+allow archon_t archon_log_t:file { create_file_perms append_file_perms };
+
+# Access /proc
+kernel_read_system_state(archon_t)
+kernel_read_kernel_sysctls(archon_t)
+
+# User home directory access
+userdom_manage_user_home_content_files(archon_t)
+userdom_manage_user_home_content_dirs(archon_t)
+
+# X11/Wayland access
+xserver_user_x_domain_template(archon, archon_t, archon_tmpfs_t)
+
+# GPU access
+dev_read_video_dev(archon_t)
+dev_rw_dri(archon_t)
+
+# Temporary files
+files_tmp_filetrans(archon_t, archon_cache_t, { file dir })
+
+# Execute browsers
+corecmd_exec_bin(archon_t)
+
+# DBus access
+dbus_system_bus_client(archon_t)
+dbus_session_bus_client(archon_t)
+
+########################################
+#
+# Archon host policy
+#
+
+allow archon_host_t self:fifo_file rw_fifo_file_perms;
+allow archon_host_t self:unix_stream_socket create_stream_socket_perms;
+allow archon_host_t self:tcp_socket create_stream_socket_perms;
+
+# Network for AI APIs
+corenet_tcp_connect_http_port(archon_host_t)
+corenet_tcp_connect_https_port(archon_host_t)
+
+# Read configuration
+allow archon_host_t archon_conf_t:dir list_dir_perms;
+allow archon_host_t archon_conf_t:file read_file_perms;
+
+# Socket
+allow archon_host_t archon_var_run_t:sock_file manage_sock_file_perms;
+allow archon_host_t archon_var_run_t:dir manage_dir_perms;
+files_pid_filetrans(archon_host_t, archon_var_run_t, sock_file)
+
+# Communicate with archon
+allow archon_t archon_host_t:unix_stream_socket connectto;
+allow archon_host_t archon_t:unix_stream_socket { read write };
+
+# Manage data
+allow archon_host_t archon_data_t:dir manage_dir_perms;
+allow archon_host_t archon_data_t:file manage_file_perms;
+
+########################################
+#
+# GhostDNS policy
+#
+
+allow ghostdns_t self:fifo_file rw_fifo_file_perms;
+allow ghostdns_t self:tcp_socket create_stream_socket_perms;
+allow ghostdns_t self:udp_socket create_socket_perms;
+
+# Bind to DNS ports
+allow ghostdns_t self:capability { net_bind_service };
+corenet_tcp_bind_dns_port(ghostdns_t)
+corenet_udp_bind_dns_port(ghostdns_t)
+
+# Upstream DNS
+corenet_tcp_connect_dns_port(ghostdns_t)
+corenet_udp_sendrecv_dns_packets(ghostdns_t)
+
+# DoH/DoT
+corenet_tcp_connect_http_port(ghostdns_t)
+corenet_tcp_connect_https_port(ghostdns_t)
+
+# Read configuration
+allow ghostdns_t archon_conf_t:dir list_dir_perms;
+allow ghostdns_t archon_conf_t:file read_file_perms;
+
+# Cache
+allow ghostdns_t archon_cache_t:dir manage_dir_perms;
+allow ghostdns_t archon_cache_t:file manage_file_perms;
+
+# Certificates
+miscfiles_read_certs(ghostdns_t)
+
+########################################
+#
+# File context definitions (archon.fc)
+#
+
+# /usr/bin/archon -- gen_context(system_u:object_r:archon_exec_t,s0)
+# /usr/bin/archon_host -- gen_context(system_u:object_r:archon_host_exec_t,s0)
+# /usr/bin/ghostdns -- gen_context(system_u:object_r:ghostdns_exec_t,s0)
+# /etc/archon(/.*)? gen_context(system_u:object_r:archon_conf_t,s0)
+# /var/lib/archon(/.*)? gen_context(system_u:object_r:archon_data_t,s0)
+# /var/cache/archon(/.*)? gen_context(system_u:object_r:archon_cache_t,s0)
+# /var/log/archon(/.*)? gen_context(system_u:object_r:archon_log_t,s0)
+# /run/archon(/.*)? gen_context(system_u:object_r:archon_var_run_t,s0)

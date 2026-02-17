@@ -899,7 +899,7 @@ impl AiProviderMetrics {
         let mut guard = self.inner.lock().expect("provider metrics lock poisoned");
         let metrics = guard
             .entry(provider.to_owned())
-            .or_insert_with(ProviderMetricsInternal::default);
+            .or_default();
         metrics.total_requests = metrics.total_requests.saturating_add(1);
         metrics.success_count = metrics.success_count.saturating_add(1);
         metrics.total_latency_ms = metrics.total_latency_ms.saturating_add(latency_ms);
@@ -913,7 +913,7 @@ impl AiProviderMetrics {
         let mut guard = self.inner.lock().expect("provider metrics lock poisoned");
         let metrics = guard
             .entry(provider.to_owned())
-            .or_insert_with(ProviderMetricsInternal::default);
+            .or_default();
         metrics.total_requests = metrics.total_requests.saturating_add(1);
         metrics.error_count = metrics.error_count.saturating_add(1);
         metrics.last_error = Some(error.to_string());

@@ -285,8 +285,8 @@ impl CryptoStack {
             DomainService::Xrpl => self.resolve_xrpl(name, http)?,
         };
 
-        if let Some(cache) = self.cache.as_ref() {
-            if let Err(err) = cache.store(&lookup_key, service, &resolution) {
+        if let Some(cache) = self.cache.as_ref()
+            && let Err(err) = cache.store(&lookup_key, service, &resolution) {
                 warn!(
                     error = %err,
                     domain = name,
@@ -294,7 +294,6 @@ impl CryptoStack {
                     "Failed to persist resolver cache entry",
                 );
             }
-        }
 
         Ok(resolution)
     }
@@ -375,20 +374,19 @@ impl CryptoStack {
             });
         }
 
-        if let Some(stripped) = input.strip_prefix("0x") {
-            if let Some(decoded) = Self::decode_hex_contenthash(stripped) {
+        if let Some(stripped) = input.strip_prefix("0x")
+            && let Some(decoded) = Self::decode_hex_contenthash(stripped) {
                 return Some(DecodedContenthash::CanonicalWithRaw {
                     canonical: decoded,
                     raw: input.to_string(),
                 });
             }
-        }
 
         None
     }
 
     fn decode_hex_contenthash(hex_value: &str) -> Option<String> {
-        if hex_value.is_empty() || hex_value.len() % 2 != 0 {
+        if hex_value.is_empty() || !hex_value.len().is_multiple_of(2) {
             return None;
         }
 
@@ -460,17 +458,15 @@ impl CryptoStack {
         if let Some(content) = response.content_hash {
             contenthash_info = self.enrich_contenthash(&mut records, &content);
         }
-        if self.resolvers.ipfs_autopin {
-            if let Some(info) = contenthash_info.as_ref() {
-                if let Err(err) = self.maybe_pin_contenthash(info) {
+        if self.resolvers.ipfs_autopin
+            && let Some(info) = contenthash_info.as_ref()
+                && let Err(err) = self.maybe_pin_contenthash(info) {
                     warn!(
                         error = %err,
                         canonical = %info.canonical,
                         "Failed to auto-pin ENS contenthash"
                     );
                 }
-            }
-        }
         Ok(DomainResolution {
             name: response.name.unwrap_or_else(|| name.to_string()),
             primary_address: response.address,

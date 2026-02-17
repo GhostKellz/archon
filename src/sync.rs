@@ -94,6 +94,7 @@ pub struct SyncEvent {
 }
 
 impl SyncEvent {
+    #[allow(clippy::too_many_arguments)]
     pub fn launch(
         session_id: Uuid,
         profile: &str,

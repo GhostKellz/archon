@@ -154,21 +154,17 @@ fn edit_ghostdns_enabled(theme: &ColorfulTheme, settings: &mut LaunchSettings) {
 fn edit_ipfs_gateway(theme: &ColorfulTheme, resolvers: &mut CryptoResolverSettings) {
     let current = resolvers.ipfs_gateway.clone().unwrap_or_default();
     let prompt = "Override IPFS gateway (leave blank to derive from GhostDNS)";
-    match Input::<String>::with_theme(theme)
+    if let Ok(value) = Input::<String>::with_theme(theme)
         .with_prompt(prompt)
         .allow_empty(true)
         .with_initial_text(current)
-        .interact_text()
-    {
-        Ok(value) => {
-            let trimmed = value.trim().to_string();
-            if trimmed.is_empty() {
-                resolvers.ipfs_gateway = None;
-            } else {
-                resolvers.ipfs_gateway = Some(trimmed);
-            }
+        .interact_text() {
+        let trimmed = value.trim().to_string();
+        if trimmed.is_empty() {
+            resolvers.ipfs_gateway = None;
+        } else {
+            resolvers.ipfs_gateway = Some(trimmed);
         }
-        Err(_) => {}
     }
 }
 

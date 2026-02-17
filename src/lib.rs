@@ -15,6 +15,13 @@ pub mod telemetry;
 pub mod theme;
 pub mod transcript;
 pub mod ui;
+pub mod automation;
+pub mod ens;
+pub mod ipfs;
+pub mod research;
+pub mod summarize;
+pub mod vision;
+pub mod voice;
 
 use std::{fs, path::PathBuf, sync::Arc, thread, time::Instant};
 
@@ -36,6 +43,13 @@ use crate::mcp::{McpHealthReport, McpOrchestrator};
 use crate::n8n::{N8nOrchestrator, N8nTriggerResult, N8nWorkflow};
 use crate::policy::{PolicyWriteAction, PolicyWriteOutcome};
 use crate::search::{ArcOrchestrator, ArcSearchResult};
+use crate::automation::AutomationOrchestrator;
+use crate::ens::EnsResolver;
+use crate::ipfs::IpfsClient;
+use crate::research::ResearchOrchestrator;
+use crate::summarize::SummarizeOrchestrator;
+use crate::vision::{VisionOrchestrator, VisionRequest, VisionResponse};
+use crate::voice::{VoiceOrchestrator, TtsRequest, AudioOutput};
 use crate::profile::{ProfileBadge, ProfileRecord, ProfileStore};
 use crate::sync::{SyncEvent, SyncLayer};
 use crate::telemetry::ProcessMonitor;
@@ -89,6 +103,13 @@ pub struct Launcher {
     mcp: McpOrchestrator,
     n8n: N8nOrchestrator,
     arc: ArcOrchestrator,
+    vision: VisionOrchestrator,
+    voice: VoiceOrchestrator,
+    summarize: SummarizeOrchestrator,
+    research: ResearchOrchestrator,
+    automation: AutomationOrchestrator,
+    ipfs: IpfsClient,
+    ens: EnsResolver,
 }
 
 impl Launcher {
@@ -168,12 +189,21 @@ impl Launcher {
         let retention = transcript_retention_from_settings(&settings.transcripts_retention);
         let transcripts = Arc::new(TranscriptStore::with_retention(transcript_root, retention)?);
         let ai = AiBridge::from_settings(&settings.ai, Arc::clone(&transcripts));
+        let ai_arc = Arc::new(ai.clone());
         let ai_host = AiHost::from_settings(&settings.ai_host)?;
         let crypto = CryptoStack::from_settings(&settings.crypto);
         let ghostdns = GhostDns::from_settings(&settings.ghostdns)?;
         let mcp = McpOrchestrator::from_settings(settings.mcp.clone());
         let n8n = N8nOrchestrator::from_settings(settings.n8n.clone());
         let arc = ArcOrchestrator::from_settings(settings.arc.clone());
+        let arc_arc = Arc::new(arc.clone());
+        let vision = VisionOrchestrator::from_settings(settings.vision.clone(), Arc::clone(&ai_arc));
+        let voice = VoiceOrchestrator::from_settings(settings.voice.clone(), Arc::clone(&ai_arc));
+        let summarize = SummarizeOrchestrator::from_settings(settings.summarize.clone(), Arc::clone(&ai_arc));
+        let research = ResearchOrchestrator::from_settings(settings.research.clone(), Arc::clone(&ai_arc), Arc::clone(&arc_arc));
+        let automation = AutomationOrchestrator::from_settings(settings.automation.clone(), Arc::clone(&ai_arc));
+        let ipfs = IpfsClient::from_settings(settings.ipfs.clone());
+        let ens = EnsResolver::from_settings(settings.ens.clone());
         let palette = ThemeRegistry::load(&settings.ui.theme, config_dir.as_deref())
             .unwrap_or_else(|err| {
                 warn!(error = %err, "Falling back to default theme palette");
@@ -208,6 +238,13 @@ impl Launcher {
             mcp,
             n8n,
             arc,
+            vision,
+            voice,
+            summarize,
+            research,
+            automation,
+            ipfs,
+            ens,
         })
     }
 
@@ -276,12 +313,10 @@ impl Launcher {
         if ensure.attempted_start {
             if active_state == "active" {
                 info!(unit = %status.unit, enabled = ?status.enabled_state, "archon-host systemd unit active");
+            } else if let Some(error) = ensure.start_error.as_deref().or(status.error.as_deref()) {
+                warn!(unit = %status.unit, active_state, error, "archon-host systemd unit failed to reach active state");
             } else {
-                if let Some(error) = ensure.start_error.as_deref().or(status.error.as_deref()) {
-                    warn!(unit = %status.unit, active_state, error, "archon-host systemd unit failed to reach active state");
-                } else {
-                    warn!(unit = %status.unit, active_state, "archon-host systemd unit failed to reach active state");
-                }
+                warn!(unit = %status.unit, active_state, "archon-host systemd unit failed to reach active state");
             }
         } else if active_state != "active" {
             if let Some(error) = status.error.as_deref() {
@@ -512,6 +547,34 @@ impl Launcher {
         &self.arc
     }
 
+    pub fn vision(&self) -> &VisionOrchestrator {
+        &self.vision
+    }
+
+    pub fn voice(&self) -> &VoiceOrchestrator {
+        &self.voice
+    }
+
+    pub fn summarize(&self) -> &SummarizeOrchestrator {
+        &self.summarize
+    }
+
+    pub fn research(&self) -> &ResearchOrchestrator {
+        &self.research
+    }
+
+    pub fn automation(&self) -> &AutomationOrchestrator {
+        &self.automation
+    }
+
+    pub fn ipfs(&self) -> &IpfsClient {
+        &self.ipfs
+    }
+
+    pub fn ens(&self) -> &EnsResolver {
+        &self.ens
+    }
+
     /// Convenience helper for launching Chromium Max with managed policy defaults.
     pub fn spawn_chromium_max(
         &mut self,
@@ -618,6 +681,16 @@ impl Launcher {
         self.n8n.trigger_workflow(workflow_id, None, None)
     }
 
+    /// Analyze an image using vision capabilities.
+    pub fn vision_analyze(&self, request: &VisionRequest) -> Result<VisionResponse> {
+        self.vision.analyze(request)
+    }
+
+    /// Synthesize text to speech.
+    pub fn text_to_speech(&self, request: &TtsRequest) -> Result<AudioOutput> {
+        self.voice.text_to_speech(request)
+    }
+
     /// Produce a high-level diagnostics report without mutating launcher state.
     pub fn diagnostics(&self) -> Result<DiagnosticsReport> {
         let profile_root = self.settings.resolve_profile_root()?;
@@ -656,6 +729,13 @@ impl Launcher {
         let ghostdns = self.ghostdns.health_report();
         let mcp = self.mcp.health_report();
         let ui = self.ui.health();
+        let vision = self.vision.health_report();
+        let voice = self.voice.health_report();
+        let summarize = self.summarize.health_report();
+        let research = self.research.health_report();
+        let automation = self.automation.health_report();
+        let ipfs = self.ipfs.health_report();
+        let ens = self.ens.health_report();
         let profiles = self.profiles.list_profiles()?;
         let mut profile_badges = Vec::new();
         for profile in profiles {
@@ -679,6 +759,13 @@ impl Launcher {
             crypto,
             ghostdns,
             ui,
+            vision,
+            voice,
+            summarize,
+            research,
+            automation,
+            ipfs,
+            ens,
             profile_badges,
             telemetry,
         })
@@ -788,6 +875,13 @@ pub struct DiagnosticsReport {
     pub crypto: CryptoHealthReport,
     pub ghostdns: GhostDnsHealthReport,
     pub ui: UiHealthReport,
+    pub vision: crate::vision::VisionHealthReport,
+    pub voice: crate::voice::VoiceHealthReport,
+    pub summarize: crate::summarize::SummarizeHealthReport,
+    pub research: crate::research::ResearchHealthReport,
+    pub automation: crate::automation::AutomationHealthReport,
+    pub ipfs: crate::ipfs::IpfsHealthReport,
+    pub ens: crate::ens::EnsHealthReport,
     pub profile_badges: Vec<ProfileBadgeSummary>,
     pub telemetry: crate::telemetry::TelemetryDiagnostics,
 }

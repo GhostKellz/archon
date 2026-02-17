@@ -90,8 +90,8 @@ impl AiHost {
             })?;
         }
 
-        if let Some(manifest) = &self.manifest_path {
-            if let Some(parent) = manifest.parent() {
+        if let Some(manifest) = &self.manifest_path
+            && let Some(parent) = manifest.parent() {
                 fs::create_dir_all(parent).with_context(|| {
                     format!(
                         "Failed to create AI host manifest directory {}",
@@ -99,7 +99,6 @@ impl AiHost {
                     )
                 })?;
             }
-        }
 
         let rendered = self.render_default_config(ai_settings, mcp_settings)?;
         let existed = self.config_path.exists();
@@ -164,8 +163,8 @@ impl AiHost {
         }
 
         let mut start_error = None;
-        if let Some(output) = systemctl_user(&["start", status.unit.as_str()])? {
-            if !output.status.success() {
+        if let Some(output) = systemctl_user(&["start", status.unit.as_str()])?
+            && !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
                 let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 let message = if !stderr.is_empty() { stderr } else { stdout };
@@ -173,7 +172,6 @@ impl AiHost {
                     start_error = Some(message);
                 }
             }
-        }
 
         status = self.systemd_status_internal()?;
         Ok(SystemdEnsureOutcome {
@@ -227,8 +225,8 @@ impl AiHost {
             return Ok(status);
         }
 
-        if status.available {
-            if let Some(output) = systemctl_user(&["is-enabled", &unit])? {
+        if status.available
+            && let Some(output) = systemctl_user(&["is-enabled", &unit])? {
                 let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !stdout.is_empty() {
                     status.enabled_state = Some(stdout.clone());
@@ -248,7 +246,6 @@ impl AiHost {
                     }
                 }
             }
-        }
 
         Ok(status)
     }

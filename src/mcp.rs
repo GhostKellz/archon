@@ -78,8 +78,8 @@ impl McpOrchestrator {
             }
         };
 
-        if let Some(path) = &docker.compose_file {
-            if !path.exists() {
+        if let Some(path) = &docker.compose_file
+            && !path.exists() {
                 return Ok(Some(McpDockerEnsureOutcome {
                     compose_file,
                     attempted: false,
@@ -87,7 +87,6 @@ impl McpOrchestrator {
                     message: Some(format!("docker compose file missing: {}", path.display())),
                 }));
             }
-        }
 
         let mut command = Command::new(docker_path);
         command.arg("compose");
@@ -199,11 +198,10 @@ impl McpOrchestrator {
         if !docker_available {
             issues.push("docker binary not found in PATH".into());
         }
-        if !compose_present {
-            if let Some(path) = &settings.compose_file {
+        if !compose_present
+            && let Some(path) = &settings.compose_file {
                 issues.push(format!("compose file missing: {}", path.display()));
             }
-        }
         McpDockerStatus {
             compose_file: settings.compose_file.clone(),
             auto_start: settings.auto_start,
@@ -228,11 +226,10 @@ impl McpOrchestrator {
             issues.push("invalid endpoint URL".into());
         }
 
-        if connector.enabled && connector.api_key_env.is_some() && !has_api_key {
-            if let Some(env_key) = &connector.api_key_env {
+        if connector.enabled && connector.api_key_env.is_some() && !has_api_key
+            && let Some(env_key) = &connector.api_key_env {
                 issues.push(format!("missing API key environment variable {env_key}"));
             }
-        }
 
         if connector.enabled && parsed.is_ok() {
             let health_url = join_endpoint(&connector.endpoint, "health");

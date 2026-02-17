@@ -394,8 +394,8 @@ impl SearchClient {
         let mut results = Vec::new();
 
         // Abstract result
-        if let Some(abstract_text) = response.get("Abstract").and_then(|a| a.as_str()) {
-            if !abstract_text.is_empty() {
+        if let Some(abstract_text) = response.get("Abstract").and_then(|a| a.as_str())
+            && !abstract_text.is_empty() {
                 results.push(SearchResult {
                     title: response
                         .get("Heading")
@@ -416,7 +416,6 @@ impl SearchClient {
                     score: Some(1.0),
                 });
             }
-        }
 
         // Related topics
         if let Some(topics) = response.get("RelatedTopics").and_then(|t| t.as_array()) {

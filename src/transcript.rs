@@ -221,13 +221,12 @@ impl TranscriptStore {
         entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         let mut remove: HashSet<Uuid> = HashSet::new();
 
-        if let Some(max_entries) = self.retention.max_entries {
-            if entries.len() > max_entries {
+        if let Some(max_entries) = self.retention.max_entries
+            && entries.len() > max_entries {
                 for entry in entries.iter().skip(max_entries) {
                     remove.insert(entry.id);
                 }
             }
-        }
 
         if let Some(max_age) = self.retention.max_age {
             let cutoff = Utc::now() - max_age;
@@ -381,19 +380,16 @@ pub struct AttachmentInput<'a> {
 /// Origin for the conversation (CLI, browser sidebar, HTTP API, etc.).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum TranscriptSource {
     Cli,
     Sidebar,
     HostApi,
     ArcSearch,
+    #[default]
     Unknown,
 }
 
-impl Default for TranscriptSource {
-    fn default() -> Self {
-        TranscriptSource::Unknown
-    }
-}
 
 impl std::fmt::Display for TranscriptSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -540,7 +536,7 @@ fn derive_title(prompt: &str) -> String {
         return trimmed.to_string();
     }
     let mut title = trimmed[..DEFAULT_TITLE_LIMIT].to_string();
-    title.push_str("…");
+    title.push('…');
     title
 }
 
@@ -603,7 +599,7 @@ fn persist_attachments(
         let ext = extension_from_mime(attachment.mime);
         let base_name = attachment
             .filename
-            .map(|name| sanitize_filename(name))
+            .map(sanitize_filename)
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| format!("attachment-{index}"));
         let stored_name = if ext.is_empty() {
@@ -701,7 +697,7 @@ fn render_markdown(transcript: &Transcript) -> String {
             }
         }
         if !message.content.is_empty() {
-            output.push_str("\n");
+            output.push('\n');
             output.push_str(message.content.trim());
             output.push_str("\n\n");
         }
