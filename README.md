@@ -1,8 +1,7 @@
-# 👽 Archon
-
 <div align="center">
-  <img src="assets/icons/archon-final1.png" alt="Archon Concept" width="180">
-  <img src="assets/icons/ArchonBrowser.png" alt="Archon" width="180">
+  <img src="assets/icons/archon-github.png" alt="Archon" width="200">
+
+# Archon
 </div>
 
 [![Rust](https://img.shields.io/badge/Built_with-Rust-orange?style=flat-square\&logo=rust)](https://www.rust-lang.org)
