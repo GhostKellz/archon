@@ -28,13 +28,12 @@ hyper = { version = "1.4", features = ["http1", "http2", "server"] }
 axum = { version = "0.7", features = ["json"] }
 base64 = "0.22"
 futures-util = "0.3"
-hickory-proto = { version = "0.24", features = ["serde"] }
+hickory-proto = { version = "0.25.2", features = ["serde"] }
 toml = "0.8"
 tower = "0.4"
-prometheus = "0.13"
-tokio-rustls = "0.24"
-rustls-pemfile = "1.0"
-webpki-roots = "0.25"
+prometheus = { version = "0.14", default-features = false }
+tokio-rustls = "0.26"
+webpki-roots = "1.0"
 cid = "0.11"
 hex = "0.4"
 unsigned-varint = "0.7"

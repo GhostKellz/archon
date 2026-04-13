@@ -412,10 +412,11 @@ impl AutomationOrchestrator {
 
         // Check domain restrictions
         if let Some(ref domain) = action.domain
-            && !self.is_domain_allowed(domain) {
-                issues.push(format!("Domain '{}' is not allowed", domain));
-                suggestions.push("Add domain to allowed_domains in settings".into());
-            }
+            && !self.is_domain_allowed(domain)
+        {
+            issues.push(format!("Domain '{}' is not allowed", domain));
+            suggestions.push("Add domain to allowed_domains in settings".into());
+        }
 
         // Check for sensitive fields
         if action.sensitive {
@@ -461,10 +462,7 @@ impl AutomationOrchestrator {
         // Validate first
         let validation = self.validate_action(action);
         if !validation.valid {
-            bail!(
-                "Action validation failed: {}",
-                validation.issues.join("; ")
-            );
+            bail!("Action validation failed: {}", validation.issues.join("; "));
         }
 
         let started = Instant::now();
@@ -573,8 +571,8 @@ impl AutomationOrchestrator {
             .max()
             .unwrap_or(RiskLevel::Low);
 
-        let requires_confirmation = risk_level.requires_confirmation()
-            || self.settings.require_confirmation;
+        let requires_confirmation =
+            risk_level.requires_confirmation() || self.settings.require_confirmation;
 
         Ok(ActionPlan {
             id: Uuid::new_v4(),

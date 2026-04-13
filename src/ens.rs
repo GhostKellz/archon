@@ -88,7 +88,9 @@ impl EnsResolver {
     /// Check if a string looks like an ENS name
     pub fn is_ens_name(&self, input: &str) -> bool {
         let lower = input.to_lowercase();
-        self.settings.supported_tlds.iter()
+        self.settings
+            .supported_tlds
+            .iter()
             .any(|tld| lower.ends_with(&format!(".{}", tld)))
     }
 
@@ -117,10 +119,13 @@ impl EnsResolver {
         // Update cache
         if self.settings.cache_enabled {
             let mut cache = self.cache.write().expect("lock poisoned");
-            cache.insert(normalized, EnsCacheEntry {
-                resolution: ens_resolution.clone(),
-                resolved_at: Instant::now(),
-            });
+            cache.insert(
+                normalized,
+                EnsCacheEntry {
+                    resolution: ens_resolution.clone(),
+                    resolved_at: Instant::now(),
+                },
+            );
         }
 
         info!(name = %name, address = ?ens_resolution.address, "ENS resolved");
@@ -171,7 +176,9 @@ impl EnsResolver {
 
             // Suggest common TLDs for partial names
             if !rest.is_empty() && !rest.contains('.') {
-                for tld in &self.settings.supported_tlds[..std::cmp::min(limit, self.settings.supported_tlds.len())] {
+                for tld in &self.settings.supported_tlds
+                    [..std::cmp::min(limit, self.settings.supported_tlds.len())]
+                {
                     suggestions.push(OmniboxSuggestion {
                         text: format!("ens:{}.{}", rest, tld),
                         description: format!("Navigate to {}.{}", rest, tld),
@@ -323,8 +330,16 @@ impl EnsBadge {
                 )
             }
             EnsBadgeStyle::Detailed => {
-                let addr = self.address.as_deref()
-                    .map(|a| format!("{:.6}...{}", &a[..8.min(a.len())], &a[a.len().saturating_sub(4)..]))
+                let addr = self
+                    .address
+                    .as_deref()
+                    .map(|a| {
+                        format!(
+                            "{:.6}...{}",
+                            &a[..8.min(a.len())],
+                            &a[a.len().saturating_sub(4)..]
+                        )
+                    })
                     .unwrap_or_default();
                 format!(
                     r#"<span class="ens-badge ens-badge-detailed">

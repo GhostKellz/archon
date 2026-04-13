@@ -158,9 +158,10 @@ impl UiShell {
             }
         }
         if let Ok(display) = env::var("WAYLAND_DISPLAY")
-            && display.to_ascii_lowercase().contains("weston") {
-                return Some("Weston".into());
-            }
+            && display.to_ascii_lowercase().contains("weston")
+        {
+            return Some("Weston".into());
+        }
         None
     }
 
@@ -202,9 +203,10 @@ impl UiShell {
                 }
                 let vendor_path = entry.path().join("device/vendor");
                 if let Ok(vendor) = fs::read_to_string(&vendor_path)
-                    && let Some(vendor) = GpuVendor::from_pci_id(vendor.trim()) {
-                        return vendor;
-                    }
+                    && let Some(vendor) = GpuVendor::from_pci_id(vendor.trim())
+                {
+                    return vendor;
+                }
             }
         }
 
@@ -262,9 +264,10 @@ impl UiShell {
             || Path::new("/proc/driver/nvidia/version").exists()
         {
             if let Some(line) = Self::read_first_line("/proc/driver/nvidia/version")
-                && line.to_ascii_lowercase().contains("open kernel module") {
-                    return NvidiaDriverKind::OpenKernel;
-                }
+                && line.to_ascii_lowercase().contains("open kernel module")
+            {
+                return NvidiaDriverKind::OpenKernel;
+            }
             return NvidiaDriverKind::Proprietary;
         }
 
@@ -317,9 +320,10 @@ impl UiShell {
         }
 
         if let Some(name) = compositor
-            && name.eq_ignore_ascii_case("hyprland") {
-                return Some("vulkan".into());
-            }
+            && name.eq_ignore_ascii_case("hyprland")
+        {
+            return Some("vulkan".into());
+        }
 
         None
     }
@@ -436,8 +440,10 @@ mod tests {
 
     #[test]
     fn health_with_wayland_disabled_skips_probe() {
-        let mut settings = UiSettings::default();
-        settings.prefer_wayland = false;
+        let settings = UiSettings {
+            prefer_wayland: false,
+            ..UiSettings::default()
+        };
         let palette = crate::theme::ThemeRegistry::default_palette();
         let shell = UiShell::new(settings, palette);
         let report = shell.health();
@@ -448,8 +454,10 @@ mod tests {
 
     #[test]
     fn health_override_can_disable_wayland() {
-        let mut settings = UiSettings::default();
-        settings.prefer_wayland = true;
+        let settings = UiSettings {
+            prefer_wayland: true,
+            ..UiSettings::default()
+        };
         let palette = crate::theme::ThemeRegistry::default_palette();
         let shell = UiShell::new(settings, palette);
         let report = shell.health_with_overrides(Some(false), None);

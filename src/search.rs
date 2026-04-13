@@ -220,9 +220,7 @@ impl SearchClient {
         Ok(SearchResponse {
             query: query.to_string(),
             results,
-            total_results: response
-                .get("number_of_results")
-                .and_then(|n| n.as_u64()),
+            total_results: response.get("number_of_results").and_then(|n| n.as_u64()),
             latency_ms,
             provider: "searxng".into(),
         })
@@ -230,8 +228,8 @@ impl SearchClient {
 
     /// Search using Brave Search API.
     fn search_brave(&self, query: &str) -> Result<SearchResponse> {
-        let api_key = resolve_api_key(&self.config)
-            .context("Brave Search API key not configured")?;
+        let api_key =
+            resolve_api_key(&self.config).context("Brave Search API key not configured")?;
 
         let url = format!(
             "{}?q={}&count={}",
@@ -304,8 +302,7 @@ impl SearchClient {
 
     /// Search using Tavily API (optimized for RAG).
     fn search_tavily(&self, query: &str) -> Result<SearchResponse> {
-        let api_key = resolve_api_key(&self.config)
-            .context("Tavily API key not configured")?;
+        let api_key = resolve_api_key(&self.config).context("Tavily API key not configured")?;
 
         let payload = json!({
             "api_key": api_key,
@@ -395,27 +392,28 @@ impl SearchClient {
 
         // Abstract result
         if let Some(abstract_text) = response.get("Abstract").and_then(|a| a.as_str())
-            && !abstract_text.is_empty() {
-                results.push(SearchResult {
-                    title: response
-                        .get("Heading")
-                        .and_then(|h| h.as_str())
-                        .unwrap_or("Summary")
-                        .to_string(),
-                    url: response
-                        .get("AbstractURL")
-                        .and_then(|u| u.as_str())
-                        .unwrap_or("")
-                        .to_string(),
-                    snippet: abstract_text.to_string(),
-                    domain: response
-                        .get("AbstractSource")
-                        .and_then(|s| s.as_str())
-                        .map(|s| s.to_string()),
-                    published_date: None,
-                    score: Some(1.0),
-                });
-            }
+            && !abstract_text.is_empty()
+        {
+            results.push(SearchResult {
+                title: response
+                    .get("Heading")
+                    .and_then(|h| h.as_str())
+                    .unwrap_or("Summary")
+                    .to_string(),
+                url: response
+                    .get("AbstractURL")
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                snippet: abstract_text.to_string(),
+                domain: response
+                    .get("AbstractSource")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string()),
+                published_date: None,
+                score: Some(1.0),
+            });
+        }
 
         // Related topics
         if let Some(topics) = response.get("RelatedTopics").and_then(|t| t.as_array()) {

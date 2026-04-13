@@ -39,7 +39,6 @@ pub enum LaunchMode {
     Ai,
 }
 
-
 /// Policy presets applied to Chromium Max.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
@@ -52,10 +51,8 @@ pub enum PolicyProfile {
     Hardened,
 }
 
-
 /// Available AI provider integrations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum, Default)]
 pub enum AiProviderKind {
     /// Local Ollama instance (default, no API key required)
     #[serde(rename = "local-ollama")]
@@ -132,7 +129,6 @@ impl AiProviderKind {
     }
 }
 
-
 impl std::fmt::Display for AiProviderKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -158,7 +154,6 @@ pub struct AiProviderCapabilities {
     pub audio: bool,
 }
 
-
 /// Families of supported crypto networks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
@@ -179,7 +174,6 @@ impl CryptoNetworkKind {
         )
     }
 }
-
 
 impl std::fmt::Display for CryptoNetworkKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -768,8 +762,7 @@ impl Default for GhostDnsSettings {
 }
 
 /// Model Context Protocol integration settings (Docker, n8n, etc.).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct McpSettings {
     #[serde(default)]
     pub docker: Option<McpDockerSettings>,
@@ -777,10 +770,8 @@ pub struct McpSettings {
     pub connectors: Vec<McpConnector>,
 }
 
-
 /// N8N workflow automation integration settings.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct N8nSettings {
     /// Whether N8N integration is enabled.
     #[serde(default)]
@@ -792,7 +783,6 @@ pub struct N8nSettings {
     #[serde(default)]
     pub instances: Vec<N8nInstanceConfig>,
 }
-
 
 /// Configuration for a single N8N instance.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -936,7 +926,6 @@ pub enum ArcSearchProviderKind {
     DuckDuckGo,
 }
 
-
 /// Opt-in telemetry configuration shared across Archon services.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelemetrySettings {
@@ -1023,7 +1012,6 @@ pub enum TraceOtlpProtocol {
     Grpc,
     HttpProtobuf,
 }
-
 
 /// Docker-specific MCP descriptors so Archon can orchestrate sidecars.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1210,8 +1198,7 @@ impl Default for UiSettings {
 }
 
 /// Engine-specific tuning parameters.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EngineSpecificConfig {
     /// Optional explicit binary path.
     pub binary_path: Option<PathBuf>,
@@ -1259,10 +1246,8 @@ impl EngineSpecificConfig {
     }
 }
 
-
 /// Key-value environment variable pair persisted in config.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EnvVar {
     pub key: String,
     pub value: String,
@@ -1273,7 +1258,6 @@ impl EnvVar {
         (self.key.clone(), self.value.clone())
     }
 }
-
 
 /// A single launch request coming from CLI or API.
 #[derive(Debug, Clone)]

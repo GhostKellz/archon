@@ -59,8 +59,13 @@ Use `systemctl --user edit <service>.service` to temporarily relax guards while 
 ## Roadmap
 
 - AppArmor/SELinux profiles for GhostDNS and the AI host (see `docs/roadmap.md`, Phase G).
-- Automated dependency scanning (`cargo audit`, `npm audit`, `osv-scanner`) in CI with policy enforcement.
+- Automated dependency scanning in CI is expected to include `cargo audit`; unresolved RustSec findings must be explicitly documented before release.
 - Binary transparency (Sigstore/Rekor) for Chromium Max and Rust sidecar releases.
 - Hardened WebGPU test harnesses that record GPU resets per vendor for triage.
+
+## Current hardening gaps
+
+- GhostDNS now enforces explicit inbound payload and upstream response size limits, but broader abuse resistance still depends on loopback deployment and upstream timeout behavior.
+- Dependency risk acceptance is still partly manual; when RustSec warnings remain, the release checklist and review log should record why they are temporarily accepted.
 
 Security posture evolves alongside the browser stack—update this document whenever policies, systemd units, or telemetry defaults change.

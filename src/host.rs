@@ -91,14 +91,15 @@ impl AiHost {
         }
 
         if let Some(manifest) = &self.manifest_path
-            && let Some(parent) = manifest.parent() {
-                fs::create_dir_all(parent).with_context(|| {
-                    format!(
-                        "Failed to create AI host manifest directory {}",
-                        parent.display()
-                    )
-                })?;
-            }
+            && let Some(parent) = manifest.parent()
+        {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "Failed to create AI host manifest directory {}",
+                    parent.display()
+                )
+            })?;
+        }
 
         let rendered = self.render_default_config(ai_settings, mcp_settings)?;
         let existed = self.config_path.exists();
@@ -164,14 +165,15 @@ impl AiHost {
 
         let mut start_error = None;
         if let Some(output) = systemctl_user(&["start", status.unit.as_str()])?
-            && !output.status.success() {
-                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                let message = if !stderr.is_empty() { stderr } else { stdout };
-                if !message.is_empty() {
-                    start_error = Some(message);
-                }
+            && !output.status.success()
+        {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let message = if !stderr.is_empty() { stderr } else { stdout };
+            if !message.is_empty() {
+                start_error = Some(message);
             }
+        }
 
         status = self.systemd_status_internal()?;
         Ok(SystemdEnsureOutcome {
@@ -226,26 +228,27 @@ impl AiHost {
         }
 
         if status.available
-            && let Some(output) = systemctl_user(&["is-enabled", &unit])? {
-                let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                if !stdout.is_empty() {
-                    status.enabled_state = Some(stdout.clone());
-                }
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-                    let message = if !stderr.is_empty() {
-                        stderr
-                    } else if !stdout.is_empty() {
-                        stdout
-                    } else {
-                        let code = output.status.code().unwrap_or_default();
-                        format!("systemctl is-enabled exited with code {code}")
-                    };
-                    if !message.is_empty() && status.error.is_none() {
-                        status.error = Some(message);
-                    }
+            && let Some(output) = systemctl_user(&["is-enabled", &unit])?
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !stdout.is_empty() {
+                status.enabled_state = Some(stdout.clone());
+            }
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+                let message = if !stderr.is_empty() {
+                    stderr
+                } else if !stdout.is_empty() {
+                    stdout
+                } else {
+                    let code = output.status.code().unwrap_or_default();
+                    format!("systemctl is-enabled exited with code {code}")
+                };
+                if !message.is_empty() && status.error.is_none() {
+                    status.error = Some(message);
                 }
             }
+        }
 
         Ok(status)
     }
@@ -442,12 +445,14 @@ mod tests {
 
     #[test]
     fn health_reports_missing_paths() {
-        let mut settings = AiHostSettings::default();
-        settings.enabled = true;
+        let settings = AiHostSettings {
+            enabled: true,
+            ..AiHostSettings::default()
+        };
         let host = AiHost::from_settings(&settings).expect("host builds");
         let report = host.health_report();
         assert!(!report.config_present);
-        assert!(!report.socket_parent_exists || report.socket_exists == false);
+        assert!(!report.socket_parent_exists || !report.socket_exists);
         assert!(report.manifest_path.is_some());
         assert_eq!(report.systemd.unit, settings.resolve_systemd_unit());
     }
@@ -455,11 +460,13 @@ mod tests {
     #[test]
     fn write_default_config_creates_and_updates() {
         let dir = tempdir().expect("tempdir");
-        let mut settings = AiHostSettings::default();
-        settings.enabled = true;
-        settings.config_path = Some(dir.path().join("providers.json"));
-        settings.socket_path = Some(dir.path().join("sock/archon-host.sock"));
-        settings.manifest_path = Some(dir.path().join("native/manifest.json"));
+        let settings = AiHostSettings {
+            enabled: true,
+            config_path: Some(dir.path().join("providers.json")),
+            socket_path: Some(dir.path().join("sock/archon-host.sock")),
+            manifest_path: Some(dir.path().join("native/manifest.json")),
+            ..AiHostSettings::default()
+        };
         let host = AiHost::from_settings(&settings).expect("host builds");
         let ai_settings = AiSettings::default();
         let mcp_settings = McpSettings::default();
@@ -492,8 +499,10 @@ mod tests {
 
     #[test]
     fn systemd_unit_override_supported() {
-        let mut settings = AiHostSettings::default();
-        settings.systemd_unit = Some("custom-archon-host.service".into());
+        let settings = AiHostSettings {
+            systemd_unit: Some("custom-archon-host.service".into()),
+            ..AiHostSettings::default()
+        };
         let host = AiHost::from_settings(&settings).expect("host builds");
         let report = host.health_report();
         assert_eq!(report.systemd.unit, "custom-archon-host.service");

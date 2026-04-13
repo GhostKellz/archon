@@ -16,3 +16,5 @@ dev/configs/
 # already existing elements were commented out
 
 #/target
+
+tasks/

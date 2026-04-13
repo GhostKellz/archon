@@ -1,25 +1,25 @@
 pub mod ai;
+pub mod automation;
 pub mod cli;
 pub mod config;
 pub mod crypto;
 pub mod engine;
+pub mod ens;
 pub mod ghostdns;
 pub mod host;
+pub mod ipfs;
 pub mod mcp;
 pub mod n8n;
 pub mod policy;
 pub mod profile;
+pub mod research;
 pub mod search;
+pub mod summarize;
 pub mod sync;
 pub mod telemetry;
 pub mod theme;
 pub mod transcript;
 pub mod ui;
-pub mod automation;
-pub mod ens;
-pub mod ipfs;
-pub mod research;
-pub mod summarize;
 pub mod vision;
 pub mod voice;
 
@@ -31,31 +31,31 @@ use tracing::{debug, info, info_span, warn};
 use uuid::Uuid;
 
 use crate::ai::{AiBridge, AiChatPrompt, AiChatResponse, AiHealthReport, AiHttp, BlockingAiHttp};
+use crate::automation::AutomationOrchestrator;
 use crate::config::{
     AiProviderConfig, AiProviderKind, EngineKind, LaunchMode, LaunchRequest, LaunchSettings,
     PolicyProfile, TranscriptRetentionSettings, UiSettings, default_config_path,
 };
 use crate::crypto::{CryptoHealthReport, CryptoStack, DomainResolution};
 use crate::engine::{CommandSpec, EngineRegistry};
+use crate::ens::EnsResolver;
 use crate::ghostdns::{ConfigWriteAction, ConfigWriteOutcome, GhostDns, GhostDnsHealthReport};
 use crate::host::{AiHost, AiHostHealthReport};
+use crate::ipfs::IpfsClient;
 use crate::mcp::{McpHealthReport, McpOrchestrator};
 use crate::n8n::{N8nOrchestrator, N8nTriggerResult, N8nWorkflow};
 use crate::policy::{PolicyWriteAction, PolicyWriteOutcome};
-use crate::search::{ArcOrchestrator, ArcSearchResult};
-use crate::automation::AutomationOrchestrator;
-use crate::ens::EnsResolver;
-use crate::ipfs::IpfsClient;
-use crate::research::ResearchOrchestrator;
-use crate::summarize::SummarizeOrchestrator;
-use crate::vision::{VisionOrchestrator, VisionRequest, VisionResponse};
-use crate::voice::{VoiceOrchestrator, TtsRequest, AudioOutput};
 use crate::profile::{ProfileBadge, ProfileRecord, ProfileStore};
+use crate::research::ResearchOrchestrator;
+use crate::search::{ArcOrchestrator, ArcSearchResult};
+use crate::summarize::SummarizeOrchestrator;
 use crate::sync::{SyncEvent, SyncLayer};
 use crate::telemetry::ProcessMonitor;
 use crate::theme::ThemeRegistry;
 use crate::transcript::{TranscriptRetention, TranscriptStore};
 use crate::ui::{UiHealthReport, UiShell};
+use crate::vision::{VisionOrchestrator, VisionRequest, VisionResponse};
+use crate::voice::{AudioOutput, TtsRequest, VoiceOrchestrator};
 
 struct StartupTimeline {
     start: Instant,
@@ -197,11 +197,18 @@ impl Launcher {
         let n8n = N8nOrchestrator::from_settings(settings.n8n.clone());
         let arc = ArcOrchestrator::from_settings(settings.arc.clone());
         let arc_arc = Arc::new(arc.clone());
-        let vision = VisionOrchestrator::from_settings(settings.vision.clone(), Arc::clone(&ai_arc));
+        let vision =
+            VisionOrchestrator::from_settings(settings.vision.clone(), Arc::clone(&ai_arc));
         let voice = VoiceOrchestrator::from_settings(settings.voice.clone(), Arc::clone(&ai_arc));
-        let summarize = SummarizeOrchestrator::from_settings(settings.summarize.clone(), Arc::clone(&ai_arc));
-        let research = ResearchOrchestrator::from_settings(settings.research.clone(), Arc::clone(&ai_arc), Arc::clone(&arc_arc));
-        let automation = AutomationOrchestrator::from_settings(settings.automation.clone(), Arc::clone(&ai_arc));
+        let summarize =
+            SummarizeOrchestrator::from_settings(settings.summarize.clone(), Arc::clone(&ai_arc));
+        let research = ResearchOrchestrator::from_settings(
+            settings.research.clone(),
+            Arc::clone(&ai_arc),
+            Arc::clone(&arc_arc),
+        );
+        let automation =
+            AutomationOrchestrator::from_settings(settings.automation.clone(), Arc::clone(&ai_arc));
         let ipfs = IpfsClient::from_settings(settings.ipfs.clone());
         let ens = EnsResolver::from_settings(settings.ens.clone());
         let palette = ThemeRegistry::load(&settings.ui.theme, config_dir.as_deref())

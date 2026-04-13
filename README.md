@@ -1,12 +1,29 @@
-<div align="center">
-  <img src="assets/icons/archon-github.png" alt="Archon" width="200">
+<p align="center">
+  <img src="assets/icons/archon-github.png" alt="Archon" width="200" />
+</p>
 
-# Archon
-</div>
+<h1 align="center">Archon</h1>
 
-[![Rust](https://img.shields.io/badge/Built_with-Rust-orange?style=flat-square\&logo=rust)](https://www.rust-lang.org)
-[![GPU Optimized](https://img.shields.io/badge/NVIDIA-Accelerated-green?style=flat-square\&logo=nvidia)](https://developer.nvidia.com)
-[![Wayland Ready](https://img.shields.io/badge/Wayland-Native-blue?style=flat-square\&logo=linux)](https://wayland.freedesktop.org)
+<p align="center">
+  <strong>Sovereign Browser Runtime for AI, Crypto, and Local Services</strong>
+</p>
+
+<p align="center">
+  <strong>Rust-first launcher, GhostDNS sidecar, and Wayland-aware browser orchestration for Linux power users</strong>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Rust-B7410E?style=for-the-badge&logo=rust&logoColor=white" alt="Rust">
+  <img src="https://img.shields.io/badge/Linux-FCC624?style=for-the-badge&logo=linux&logoColor=black" alt="Linux">
+  <img src="https://img.shields.io/badge/Arch_Linux-1793D1?style=for-the-badge&logo=arch-linux&logoColor=white" alt="Arch Linux">
+  <img src="https://img.shields.io/badge/Wayland-1793D1?style=for-the-badge&logo=wayland&logoColor=white" alt="Wayland">
+  <img src="https://img.shields.io/badge/Chromium-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Chromium">
+  <img src="https://img.shields.io/badge/Firefox-FF7139?style=for-the-badge&logo=firefox-browser&logoColor=white" alt="Firefox">
+  <img src="https://img.shields.io/badge/GhostDNS-111111?style=for-the-badge" alt="GhostDNS">
+  <img src="https://img.shields.io/badge/Tokio-4E5EE4?style=for-the-badge" alt="Tokio">
+  <img src="https://img.shields.io/badge/NVIDIA-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="NVIDIA">
+  <img src="https://img.shields.io/badge/Ollama-111111?style=for-the-badge" alt="Ollama">
+</p>
 
 **Archon** is a **sovereign web browser** forged in **Rust**, GPU-accelerated for **NVIDIA Linux**, and architected for a world of **crypto-native identity** and **agentic AI**.
 
@@ -70,10 +87,10 @@ Enable connectors like LangChain, n8n, or bespoke toolboxes by dropping them int
 ## 🪙 Crypto-Native Features
 
 * ✅ ENS + Unstoppable Domains resolution
-* ✅ WalletConnect 2.0 bridge (Metamask / Rainbow / CKVault)
-* ✅ Ethereum & Solana JSON-RPC bindings
-* ✅ IPFS / Arweave gateway resolver
-* 🔐 Local key-vault w/ hardware key support (YubiKey / Ledger)
+* ✅ Ethereum JSON-RPC bindings with configurable endpoint registry
+* ✅ IPFS gateway resolver + local GhostDNS HTTP bridge
+* ⚙️ Additional wallet / chain integrations are configuration-driven and unevenly implemented
+* 🛠️ Hardware-backed key management is not implemented in this repository
 
 ### Network orchestration
 
@@ -85,12 +102,12 @@ Enable connectors like LangChain, n8n, or bespoke toolboxes by dropping them int
 
 | Layer           | Tech                                                |
 | --------------- | --------------------------------------------------- |
-| 🧠 Core Engine  | Rust + Servo (Async Tokio)                          |
-| 🎨 UI Shell     | WGPU / Skia + Wayland native                        |
-| 🔐 Networking   | `rustls`, `hickory-dns`, DoT > DoH fallback         |
-| 🧱 Crypto Stack | `ethers-rs`, `solana-sdk`, `web3`                   |
-| 🤩 AI Bridge    | Local Ollama socket + remote Claude/OpenAI API      |
-| 🛠️ Tooling     | Integrates with `ghostctl`, `ghostdns`, `ghostmesh` |
+| 🧠 Core Runtime | Rust launcher + service binaries on Tokio           |
+| 🎨 UI Surface   | Wayland-aware engine orchestration + theme registry |
+| 🔐 Networking   | `reqwest`, `rustls`, `hickory-proto`, `axum`        |
+| 🧱 Crypto Stack | ENS/UD resolution, IPFS helpers, GhostDNS hooks     |
+| 🤩 AI Bridge    | Local Ollama + OpenAI/Claude/Gemini/xAI connectors  |
+| 🛠️ Tooling     | `ghostdns`, `archon-host`, `archon-settings`, bench |
 
 ## 🧭 Launcher CLI
 
@@ -117,7 +134,7 @@ cargo run -- --chat "transcribe this" --attach /tmp/snippet.m4a --chat-provider 
 cargo run -- --write-ghostdns-config # render GhostDNS TOML (pass --force to overwrite)
 cargo run -- --write-ai-host-config  # render AI host providers JSON (pass --force to overwrite)
 cargo run -- --sync-ghostdns-policy  # render GhostDNS + Chromium policy together (pass --force to overwrite)
-cargo run --bin archon_settings     # launch the interactive settings editor
+cargo run --bin archon-settings     # launch the interactive settings editor
 ```
 
 Use the new `archon-settings` binary when you want to tweak launch profiles, GPU mode, GhostDNS, IPFS gateways, AI providers, or telemetry without hand-editing JSON. Every prompt validates your input against the launcher schema before persisting, so you can experiment safely and rerun it any time to inspect the current configuration.
@@ -259,28 +276,28 @@ Default config is generated on first launch:
 
 ---
 
-## 🧩 Feature Matrix (2025 Roadmap)
+## 🧩 Feature Matrix
 
 | Feature                            | Status        |
 | ---------------------------------- | ------------- |
-| 🦀 Rust-based browser core         | ✅ In progress |
-| 🎨 Wayland + WebRender GPU support | ✅ Core target |
+| 🦀 Rust launcher + service runtime | ✅ Implemented |
+| 🎨 Wayland-aware engine tuning     | ✅ Implemented |
 | 🔒 DoT / DoH DNS resolver          | ✅ Implemented |
-| 🥬 ENS / UD resolution             | ⚙️ WIP        |
+| 🥬 ENS / UD resolution             | ✅ Implemented |
+| 📡 AI host + native messaging      | ✅ Implemented |
+| 🧠 LLM chat with attachments       | ✅ Implemented |
+| 🔌 MCP / n8n / Arc integrations    | ⚙️ Prototype  |
 | 🔏 Ad / Tracker blocking           | 🛠️ Planned   |
 | 🧘 Zen-mode UI                     | 🛠️ Planned   |
-| 🧠 LLM agent integration           | ⚙️ Prototype  |
-| 🧹 Ghostctl CLI integration        | 🔜 Soon       |
-| 📦 Flatpak + AppImage builds       | 🔜 Soon       |
+| 📦 Packaging beyond AUR/dev flows  | 🔜 Soon       |
 
 ---
 
-## 🧮 Performance Goals
+## 🧮 Performance Notes
 
-* **Zero-copy GPU pipeline** for DOM rendering.
-* **NVENC/NVDEC** acceleration for media playback.
-* Optimized for **Linux (Arch, Fedora, Debian)** first; macOS + Windows later.
-* Native **Zig interop layer** under consideration for shader DSLs.
+* Current benchmark automation focuses on launcher/runtime health, WebGPU watchdog checks, and GPU matrix reporting.
+* The repository is currently oriented toward Linux-first development and packaging flows.
+* Future rendering/media acceleration work should be treated as roadmap material unless it is backed by code and verification in this repo.
 
 Spin up the benchmark harness with `cargo run -p archon-bench -- --help`; each subcommand now records real metrics and publishes JSON + HTML dashboards under `~/Archon/benchmarks`. The WebGPU watchdog supports retry logic via `--max-attempts` and writes Prometheus gauges to `~/Archon/benchmarks/webgpu/latest.prom` so Grafana can scrape GPU stability directly. Use `--output /custom/path` to redirect artifacts if you want to keep multiple runs side-by-side.
 
@@ -359,4 +376,3 @@ If you hit packaging or installation hiccups, file an issue using the "Packaging
 MIT License © 2025 [GhostKellz](https://ghostkellz.sh) / CK Technology
 
 > **Archon** — *Power behind the screen.*
-

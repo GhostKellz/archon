@@ -193,7 +193,6 @@ fn create_trace_file(service: &str, directory: &Path) -> Result<(std::fs::File, 
 
     let file = OpenOptions::new()
         .create(true)
-        
         .append(true)
         .open(&candidate)
         .with_context(|| format!("Failed to open trace file {}", candidate.display()))?;
@@ -555,25 +554,26 @@ fn maybe_rotate(path: &Path, limit: Option<u64>) -> Result<()> {
     };
 
     if let Ok(metadata) = fs::metadata(path)
-        && metadata.len() >= limit {
-            let timestamp = Utc::now().format("%Y%m%dT%H%M%SZ");
-            let file_name = path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("telemetry.jsonl");
-            let rotated_name = format!("{}.{}", file_name, timestamp);
-            let rotated_path = path
-                .parent()
-                .map(|parent| parent.join(&rotated_name))
-                .unwrap_or_else(|| PathBuf::from(rotated_name.clone()));
-            fs::rename(path, &rotated_path).with_context(|| {
-                format!(
-                    "Failed to rotate telemetry buffer {} to {}",
-                    path.display(),
-                    rotated_path.display()
-                )
-            })?;
-        }
+        && metadata.len() >= limit
+    {
+        let timestamp = Utc::now().format("%Y%m%dT%H%M%SZ");
+        let file_name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("telemetry.jsonl");
+        let rotated_name = format!("{}.{}", file_name, timestamp);
+        let rotated_path = path
+            .parent()
+            .map(|parent| parent.join(&rotated_name))
+            .unwrap_or_else(|| PathBuf::from(rotated_name.clone()));
+        fs::rename(path, &rotated_path).with_context(|| {
+            format!(
+                "Failed to rotate telemetry buffer {} to {}",
+                path.display(),
+                rotated_path.display()
+            )
+        })?;
+    }
 
     Ok(())
 }

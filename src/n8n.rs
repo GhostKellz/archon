@@ -162,7 +162,10 @@ impl N8nClient {
                         healthy: false,
                         latency_ms,
                         version: None,
-                        error: Some(format!("Health check returned status {}", response.status())),
+                        error: Some(format!(
+                            "Health check returned status {}",
+                            response.status()
+                        )),
                     }
                 }
             }
@@ -339,11 +342,7 @@ impl N8nClient {
     /// Call a webhook endpoint.
     pub fn call_webhook(&self, path: &str, data: Value) -> Result<N8nWebhookResult> {
         let path = path.trim_start_matches('/');
-        let url = format!(
-            "{}/webhook/{}",
-            self.config.url.trim_end_matches('/'),
-            path
-        );
+        let url = format!("{}/webhook/{}", self.config.url.trim_end_matches('/'), path);
 
         let started = Instant::now();
 
@@ -358,9 +357,7 @@ impl N8nClient {
         let status_code = response.status().as_u16();
         let latency_ms = started.elapsed().as_millis() as u64;
 
-        let response_body: Value = response
-            .json()
-            .unwrap_or_else(|_| json!({"status": "ok"}));
+        let response_body: Value = response.json().unwrap_or_else(|_| json!({"status": "ok"}));
 
         info!(
             instance = %self.config.name,
@@ -400,9 +397,7 @@ impl N8nClient {
         let status_code = response.status().as_u16();
         let latency_ms = started.elapsed().as_millis() as u64;
 
-        let response_body: Value = response
-            .json()
-            .unwrap_or_else(|_| json!({"status": "ok"}));
+        let response_body: Value = response.json().unwrap_or_else(|_| json!({"status": "ok"}));
 
         debug!(
             instance = %self.config.name,
@@ -425,8 +420,8 @@ impl N8nClient {
         &self,
         builder: reqwest::blocking::RequestBuilder,
     ) -> Result<reqwest::blocking::RequestBuilder> {
-        let api_key = resolve_api_key(&self.config)
-            .context("N8N API key not configured or empty")?;
+        let api_key =
+            resolve_api_key(&self.config).context("N8N API key not configured or empty")?;
 
         Ok(builder.header("X-N8N-API-KEY", api_key))
     }

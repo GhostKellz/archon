@@ -4,7 +4,7 @@ Use this checklist before publishing a new Archon build or tag. Each section can
 
 ## Pre-flight
 
-- [ ] Update `Cargo.lock` and verify `cargo fmt`, `cargo clippy`, and `cargo test` succeed on the release toolchain.
+- [ ] Update `Cargo.lock` and verify `cargo fmt`, `cargo clippy`, `cargo test`, and `cargo audit` succeed on the release toolchain.
 - [ ] Re-run `python tools/check_theme_manifests.py` for a clean Chromium theme validation report.
 - [ ] Confirm `assets/desktop.icons` and alternates match the intended release branding.
 - [ ] Ensure `config.json` schema and sample defaults reflect the supported AI providers and crypto networks.
@@ -28,6 +28,7 @@ Use this checklist before publishing a new Archon build or tag. Each section can
 ## Documentation & Communication
 
 - [ ] Update `docs/chromium_max.md` and `README.md` with any packaging changes or troubleshooting notes.
+- [ ] Review `SECURITY.md`, `docs/security.md`, and the latest `code_review.md` so accepted security tradeoffs are documented.
 - [ ] Regenerate changelog or release notes summarising UI, packaging, and infrastructure updates.
 - [ ] Create/refresh screenshots for the curated theme pack if palettes changed.
 

@@ -897,9 +897,7 @@ impl AiProviderMetrics {
 
     fn record_success(&self, provider: &str, prompt: &AiChatPrompt, latency_ms: u64) {
         let mut guard = self.inner.lock().expect("provider metrics lock poisoned");
-        let metrics = guard
-            .entry(provider.to_owned())
-            .or_default();
+        let metrics = guard.entry(provider.to_owned()).or_default();
         metrics.total_requests = metrics.total_requests.saturating_add(1);
         metrics.success_count = metrics.success_count.saturating_add(1);
         metrics.total_latency_ms = metrics.total_latency_ms.saturating_add(latency_ms);
@@ -911,9 +909,7 @@ impl AiProviderMetrics {
 
     fn record_error(&self, provider: &str, error: &anyhow::Error) {
         let mut guard = self.inner.lock().expect("provider metrics lock poisoned");
-        let metrics = guard
-            .entry(provider.to_owned())
-            .or_default();
+        let metrics = guard.entry(provider.to_owned()).or_default();
         metrics.total_requests = metrics.total_requests.saturating_add(1);
         metrics.error_count = metrics.error_count.saturating_add(1);
         metrics.last_error = Some(error.to_string());
@@ -1475,6 +1471,7 @@ mod tests {
     struct StubCall {
         url: String,
         headers: Vec<(String, String)>,
+        #[allow(dead_code)]
         body: Option<Value>,
     }
 
@@ -1589,8 +1586,10 @@ mod tests {
 
     #[test]
     fn chat_with_openai_includes_bearer_token() {
-        let mut settings = AiSettings::default();
-        settings.default_provider = "openai".into();
+        let mut settings = AiSettings {
+            default_provider: "openai".into(),
+            ..AiSettings::default()
+        };
         for provider in settings.providers.iter_mut() {
             provider.enabled = provider.name == "openai";
         }
@@ -1640,8 +1639,10 @@ mod tests {
 
     #[test]
     fn chat_with_perplexity_includes_bearer_token() {
-        let mut settings = AiSettings::default();
-        settings.default_provider = "perplexity".into();
+        let mut settings = AiSettings {
+            default_provider: "perplexity".into(),
+            ..AiSettings::default()
+        };
         for provider in settings.providers.iter_mut() {
             provider.enabled = provider.name == "perplexity";
         }
@@ -1691,8 +1692,10 @@ mod tests {
 
     #[test]
     fn image_attachment_without_vision_capability_is_rejected() {
-        let mut settings = AiSettings::default();
-        settings.default_provider = "xai".into();
+        let mut settings = AiSettings {
+            default_provider: "xai".into(),
+            ..AiSettings::default()
+        };
         for provider in settings.providers.iter_mut() {
             provider.enabled = provider.name == "xai";
         }
@@ -1717,8 +1720,10 @@ mod tests {
 
     #[test]
     fn audio_attachment_without_audio_capability_is_rejected() {
-        let mut settings = AiSettings::default();
-        settings.default_provider = "claude".into();
+        let mut settings = AiSettings {
+            default_provider: "claude".into(),
+            ..AiSettings::default()
+        };
         for provider in settings.providers.iter_mut() {
             provider.enabled = provider.name == "claude";
         }

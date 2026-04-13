@@ -628,7 +628,8 @@ async fn main() -> Result<()> {
         {
             Ok(orchestrator) => Arc::new(orchestrator),
             Err(err) => {
-                let error = anyhow::anyhow!(err).context("failed to initialise Arc search orchestrator");
+                let error =
+                    anyhow::anyhow!(err).context("failed to initialise Arc search orchestrator");
                 telemetry.record_error(&error);
                 return Err(error);
             }
@@ -1275,11 +1276,10 @@ async fn run_stdio(
                 let arc_clone = arc.clone();
                 let question_clone = question.clone();
 
-                let search_result = task::spawn_blocking(move || {
-                    arc_clone.grounded_search(&question_clone)
-                })
-                .await
-                .map_err(|err| anyhow::anyhow!(err).context("worker task panicked"))?;
+                let search_result =
+                    task::spawn_blocking(move || arc_clone.grounded_search(&question_clone))
+                        .await
+                        .map_err(|err| anyhow::anyhow!(err).context("worker task panicked"))?;
 
                 let search_result = match search_result {
                     Ok(result) => result,
@@ -1313,8 +1313,8 @@ async fn run_stdio(
                 let bridge_clone = bridge.clone();
                 let provider = ai_provider.clone();
 
-                let chat_prompt = AiChatPrompt::text(&augmented_prompt)
-                    .with_source(TranscriptSource::ArcSearch);
+                let chat_prompt =
+                    AiChatPrompt::text(&augmented_prompt).with_source(TranscriptSource::ArcSearch);
 
                 let ai_response = task::spawn_blocking(move || {
                     let http = BlockingAiHttp::default();
@@ -1345,7 +1345,8 @@ async fn run_stdio(
                 };
 
                 // Step 4: Format response with citations
-                let citations_footer = archon::search::format_citations_footer(&search_result.citations);
+                let citations_footer =
+                    archon::search::format_citations_footer(&search_result.citations);
                 let full_response = format!("{}{}", ai_response.reply, citations_footer);
 
                 info!(
@@ -1682,23 +1683,22 @@ async fn summarize_handler(
 
     let style = payload.style.as_deref().unwrap_or("brief");
     let instruction = match style {
-        "detailed" => "Provide a comprehensive summary of the following content, covering all major points and details.",
-        "bullets" => "Summarize the following content as a bulleted list of key points. Use - for each bullet.",
+        "detailed" => {
+            "Provide a comprehensive summary of the following content, covering all major points and details."
+        }
+        "bullets" => {
+            "Summarize the following content as a bulleted list of key points. Use - for each bullet."
+        }
         "tldr" => "Provide a very brief TL;DR summary in 1-2 sentences.",
         _ => "Provide a clear, concise summary of the following content.",
     };
 
-    let user_prompt = format!(
-        "{}\n\n---\n\n{}",
-        instruction,
-        payload.content
-    );
+    let user_prompt = format!("{}\n\n---\n\n{}", instruction, payload.content);
 
     let bridge = Arc::clone(&state.bridge);
     let provider = payload.provider.clone();
 
-    let chat_prompt = AiChatPrompt::text(&user_prompt)
-        .with_source(TranscriptSource::Sidebar);
+    let chat_prompt = AiChatPrompt::text(&user_prompt).with_source(TranscriptSource::Sidebar);
 
     let response = task::spawn_blocking(move || {
         let http = BlockingAiHttp::default();
@@ -1716,14 +1716,16 @@ async fn summarize_handler(
 
     // Extract key points from bullet-style responses
     let key_points: Vec<String> = if style == "bullets" {
-        response.reply
+        response
+            .reply
             .lines()
             .filter(|line| line.trim().starts_with('-') || line.trim().starts_with('•'))
             .map(|line| line.trim().trim_start_matches(['-', '•', ' ']).to_string())
             .collect()
     } else {
         // Try to extract any bullet points from the response
-        response.reply
+        response
+            .reply
             .lines()
             .filter(|line| line.trim().starts_with('-') || line.trim().starts_with('•'))
             .take(5)
@@ -1790,9 +1792,10 @@ async fn vision_handler(
         .decode(&payload.image)
         .map_err(|e| ApiError::bad_request(format!("invalid base64: {e}")))?;
 
-    let prompt_text = payload.prompt.as_deref().unwrap_or(
-        "Describe what you see in this image. Be concise but thorough."
-    );
+    let prompt_text = payload
+        .prompt
+        .as_deref()
+        .unwrap_or("Describe what you see in this image. Be concise but thorough.");
 
     // Create attachment for the image
     let attachment = AiAttachment {
@@ -2396,15 +2399,15 @@ async fn arc_search_handler(
     let result = task::spawn_blocking(move || {
         arc.grounded_search_with_provider(&query, provider.as_deref())
     })
-        .await
-        .map_err(|err| {
-            error!(?err, "blocking task panicked");
-            ApiError::internal("worker task failed")
-        })?
-        .map_err(|err| {
-            warn!(error = %err, "Arc search failed");
-            ApiError::bad_request(err.to_string())
-        })?;
+    .await
+    .map_err(|err| {
+        error!(?err, "blocking task panicked");
+        ApiError::internal("worker task failed")
+    })?
+    .map_err(|err| {
+        warn!(error = %err, "Arc search failed");
+        ApiError::bad_request(err.to_string())
+    })?;
 
     info!(
         query = %result.query,
@@ -2562,35 +2565,29 @@ async fn arc_ask_stream_handler(
         let arc_clone = arc.clone();
         let question_clone = question.clone();
 
-        let search_result = match task::spawn_blocking(move || {
-            arc_clone.grounded_search(&question_clone)
-        })
-        .await
-        {
-            Ok(Ok(result)) => result,
-            Ok(Err(err)) => {
-                let _ = tx
-                    .send(Err(format!("Search failed: {err}")))
-                    .await;
-                return;
-            }
-            Err(err) => {
-                let _ = tx
-                    .send(Err(format!("Search task panicked: {err}")))
-                    .await;
-                return;
-            }
-        };
+        let search_result =
+            match task::spawn_blocking(move || arc_clone.grounded_search(&question_clone)).await {
+                Ok(Ok(result)) => result,
+                Ok(Err(err)) => {
+                    let _ = tx.send(Err(format!("Search failed: {err}"))).await;
+                    return;
+                }
+                Err(err) => {
+                    let _ = tx.send(Err(format!("Search task panicked: {err}"))).await;
+                    return;
+                }
+            };
 
         // Send search results
-        let sources_event = Event::default()
-            .event("sources")
-            .data(json!({
+        let sources_event = Event::default().event("sources").data(
+            json!({
                 "citations": search_result.citations,
                 "sources": search_result.results,
                 "search_provider": search_result.provider,
                 "search_latency_ms": search_result.latency_ms,
-            }).to_string());
+            })
+            .to_string(),
+        );
         if tx.send(Ok(sources_event)).await.is_err() {
             return;
         }
@@ -2611,8 +2608,8 @@ async fn arc_ask_stream_handler(
         );
 
         // Step 3: Send to AI for response
-        let chat_prompt = AiChatPrompt::text(&augmented_prompt)
-            .with_source(TranscriptSource::ArcSearch);
+        let chat_prompt =
+            AiChatPrompt::text(&augmented_prompt).with_source(TranscriptSource::ArcSearch);
 
         let ai_response = match task::spawn_blocking(move || {
             let http = BlockingAiHttp::default();
@@ -2622,15 +2619,11 @@ async fn arc_ask_stream_handler(
         {
             Ok(Ok(response)) => response,
             Ok(Err(err)) => {
-                let _ = tx
-                    .send(Err(format!("AI response failed: {err}")))
-                    .await;
+                let _ = tx.send(Err(format!("AI response failed: {err}"))).await;
                 return;
             }
             Err(err) => {
-                let _ = tx
-                    .send(Err(format!("AI task panicked: {err}")))
-                    .await;
+                let _ = tx.send(Err(format!("AI task panicked: {err}"))).await;
                 return;
             }
         };
@@ -2659,9 +2652,8 @@ async fn arc_ask_stream_handler(
         let citations_footer = archon::search::format_citations_footer(&search_result.citations);
         let full_response = format!("{}{}", ai_response.reply, citations_footer);
 
-        let complete_event = Event::default()
-            .event("complete")
-            .data(json!({
+        let complete_event = Event::default().event("complete").data(
+            json!({
                 "question": question,
                 "answer": full_response,
                 "raw_answer": ai_response.reply,
@@ -2673,7 +2665,9 @@ async fn arc_ask_stream_handler(
                 "search_latency_ms": search_result.latency_ms,
                 "ai_latency_ms": ai_response.latency_ms,
                 "conversation_id": ai_response.conversation_id,
-            }).to_string());
+            })
+            .to_string(),
+        );
         let _ = tx.send(Ok(complete_event)).await;
 
         // Send finished status

@@ -76,7 +76,8 @@ impl IpfsClient {
         let api = self.api_endpoint()?;
         let url = format!("{}/api/v0/id", api);
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(&url)
             .send()
             .await
@@ -86,13 +87,17 @@ impl IpfsClient {
             bail!("IPFS node ID request failed: {}", resp.status());
         }
 
-        resp.json().await.context("Failed to parse node ID response")
+        resp.json()
+            .await
+            .context("Failed to parse node ID response")
     }
 
     /// Get the best gateway URL for content
     pub fn gateway_url(&self, cid: &str) -> String {
         let gateway = if self.settings.prefer_local {
-            self.settings.local_gateway.as_deref()
+            self.settings
+                .local_gateway
+                .as_deref()
                 .filter(|_| self.is_local_available())
                 .unwrap_or(&self.settings.public_gateway)
         } else {
@@ -105,7 +110,9 @@ impl IpfsClient {
     /// Get IPNS gateway URL
     pub fn ipns_gateway_url(&self, name: &str) -> String {
         let gateway = if self.settings.prefer_local {
-            self.settings.local_gateway.as_deref()
+            self.settings
+                .local_gateway
+                .as_deref()
                 .filter(|_| self.is_local_available())
                 .unwrap_or(&self.settings.public_gateway)
         } else {
@@ -118,12 +125,20 @@ impl IpfsClient {
     /// Pin content by CID
     pub async fn pin(&self, cid: &str, recursive: bool) -> Result<PinResult> {
         let api = self.api_endpoint()?;
-        let recursive_param = if recursive || self.settings.recursive_pin { "true" } else { "false" };
-        let url = format!("{}/api/v0/pin/add?arg={}&recursive={}", api, cid, recursive_param);
+        let recursive_param = if recursive || self.settings.recursive_pin {
+            "true"
+        } else {
+            "false"
+        };
+        let url = format!(
+            "{}/api/v0/pin/add?arg={}&recursive={}",
+            api, cid, recursive_param
+        );
 
         debug!(cid = %cid, recursive = %recursive, "Pinning content");
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(&url)
             .send()
             .await
@@ -135,8 +150,7 @@ impl IpfsClient {
             bail!("Pin request failed ({}): {}", status, body);
         }
 
-        let result: PinAddResponse = resp.json().await
-            .context("Failed to parse pin response")?;
+        let result: PinAddResponse = resp.json().await.context("Failed to parse pin response")?;
 
         info!(cid = %cid, "Content pinned successfully");
 
@@ -153,7 +167,8 @@ impl IpfsClient {
 
         debug!(cid = %cid, "Unpinning content");
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(&url)
             .send()
             .await
@@ -175,7 +190,8 @@ impl IpfsClient {
         let type_param = pin_type.map(|t| t.as_str()).unwrap_or("all");
         let url = format!("{}/api/v0/pin/ls?type={}", api, type_param);
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(&url)
             .send()
             .await
@@ -187,10 +203,13 @@ impl IpfsClient {
             bail!("Pin list request failed ({}): {}", status, body);
         }
 
-        let result: PinLsResponse = resp.json().await
+        let result: PinLsResponse = resp
+            .json()
+            .await
             .context("Failed to parse pin list response")?;
 
-        let pins: Vec<PinInfo> = result.keys
+        let pins: Vec<PinInfo> = result
+            .keys
             .into_iter()
             .map(|(cid, info)| PinInfo {
                 cid,
@@ -220,7 +239,8 @@ impl IpfsClient {
 
         debug!(name = %name, "Resolving IPNS name");
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(&url)
             .send()
             .await
@@ -232,7 +252,9 @@ impl IpfsClient {
             bail!("IPNS resolve failed ({}): {}", status, body);
         }
 
-        let result: NameResolveResponse = resp.json().await
+        let result: NameResolveResponse = resp
+            .json()
+            .await
             .context("Failed to parse IPNS resolve response")?;
 
         let cid = result.path.trim_start_matches("/ipfs/").to_string();
@@ -240,10 +262,13 @@ impl IpfsClient {
         // Update cache
         if self.settings.cache_ipns {
             let mut cache = self.ipns_cache.write().expect("lock poisoned");
-            cache.insert(name.to_string(), IpnsCacheEntry {
-                cid: cid.clone(),
-                resolved_at: Instant::now(),
-            });
+            cache.insert(
+                name.to_string(),
+                IpnsCacheEntry {
+                    cid: cid.clone(),
+                    resolved_at: Instant::now(),
+                },
+            );
         }
 
         info!(name = %name, cid = %cid, "IPNS resolved");
@@ -261,7 +286,8 @@ impl IpfsClient {
 
         debug!(cid = %cid, key = ?key, "Publishing to IPNS");
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(&url)
             .send()
             .await
@@ -273,7 +299,9 @@ impl IpfsClient {
             bail!("IPNS publish failed ({}): {}", status, body);
         }
 
-        let result: NamePublishResponse = resp.json().await
+        let result: NamePublishResponse = resp
+            .json()
+            .await
             .context("Failed to parse IPNS publish response")?;
 
         info!(name = %result.name, value = %result.value, "Published to IPNS");
@@ -291,7 +319,8 @@ impl IpfsClient {
         let url = format!("{}/api/v0/add", api);
 
         // IPFS API accepts raw content via POST body with Content-Type
-        let resp = self.client
+        let resp = self
+            .client
             .post(&url)
             .header("Content-Type", "application/octet-stream")
             .body(content.to_vec())
@@ -305,8 +334,7 @@ impl IpfsClient {
             bail!("IPFS add failed ({}): {}", status, body);
         }
 
-        let result: AddResponse = resp.json().await
-            .context("Failed to parse add response")?;
+        let result: AddResponse = resp.json().await.context("Failed to parse add response")?;
 
         info!(cid = %result.hash, size = result.size, "Content added to IPFS");
 
@@ -322,7 +350,8 @@ impl IpfsClient {
         let api = self.api_endpoint()?;
         let url = format!("{}/api/v0/cat?arg={}", api, cid);
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(&url)
             .send()
             .await
@@ -334,7 +363,8 @@ impl IpfsClient {
             bail!("IPFS cat failed ({}): {}", status, body);
         }
 
-        resp.bytes().await
+        resp.bytes()
+            .await
             .map(|b| b.to_vec())
             .context("Failed to read content bytes")
     }
@@ -349,7 +379,9 @@ impl IpfsClient {
         let trimmed = url.trim();
 
         if let Some(rest) = trimmed.strip_prefix("ipfs://") {
-            let (hash, path) = rest.split_once('/').map_or((rest, None), |(h, p)| (h, Some(format!("/{}", p))));
+            let (hash, path) = rest
+                .split_once('/')
+                .map_or((rest, None), |(h, p)| (h, Some(format!("/{}", p))));
             return Some(IpfsUrl {
                 protocol: IpfsProtocol::Ipfs,
                 hash: hash.to_string(),
@@ -358,7 +390,9 @@ impl IpfsClient {
         }
 
         if let Some(rest) = trimmed.strip_prefix("ipns://") {
-            let (hash, path) = rest.split_once('/').map_or((rest, None), |(h, p)| (h, Some(format!("/{}", p))));
+            let (hash, path) = rest
+                .split_once('/')
+                .map_or((rest, None), |(h, p)| (h, Some(format!("/{}", p))));
             return Some(IpfsUrl {
                 protocol: IpfsProtocol::Ipns,
                 hash: hash.to_string(),
@@ -375,7 +409,9 @@ impl IpfsClient {
                     IpfsProtocol::Ipns
                 };
                 let rest = &trimmed[pos + pattern.len()..];
-                let (hash, path) = rest.split_once('/').map_or((rest, None), |(h, p)| (h, Some(format!("/{}", p))));
+                let (hash, path) = rest
+                    .split_once('/')
+                    .map_or((rest, None), |(h, p)| (h, Some(format!("/{}", p))));
                 return Some(IpfsUrl {
                     protocol,
                     hash: hash.to_string(),
@@ -404,13 +440,18 @@ impl IpfsClient {
     }
 
     fn api_endpoint(&self) -> Result<String> {
-        self.settings.api_endpoint.clone()
+        self.settings
+            .api_endpoint
+            .clone()
             .context("IPFS API endpoint not configured")
             .map(|s| s.trim_end_matches('/').to_string())
     }
 
     fn is_local_available(&self) -> bool {
-        self.local_available.read().expect("lock poisoned").unwrap_or(false)
+        self.local_available
+            .read()
+            .expect("lock poisoned")
+            .unwrap_or(false)
     }
 }
 
@@ -586,11 +627,16 @@ mod tests {
 
     #[test]
     fn parse_ipfs_url() {
-        let url = IpfsClient::parse_url("ipfs://bafybeigdyrzt3nz6mx6mxwe3ieucs5cjoxgr7d5p3qsyt4nkuppk3f2nke");
+        let url = IpfsClient::parse_url(
+            "ipfs://bafybeigdyrzt3nz6mx6mxwe3ieucs5cjoxgr7d5p3qsyt4nkuppk3f2nke",
+        );
         assert!(url.is_some());
         let url = url.unwrap();
         assert_eq!(url.protocol, IpfsProtocol::Ipfs);
-        assert_eq!(url.hash, "bafybeigdyrzt3nz6mx6mxwe3ieucs5cjoxgr7d5p3qsyt4nkuppk3f2nke");
+        assert_eq!(
+            url.hash,
+            "bafybeigdyrzt3nz6mx6mxwe3ieucs5cjoxgr7d5p3qsyt4nkuppk3f2nke"
+        );
         assert!(url.path.is_none());
     }
 
@@ -623,7 +669,9 @@ mod tests {
 
     #[test]
     fn validate_cid() {
-        assert!(IpfsClient::validate_cid("bafybeigdyrzt3nz6mx6mxwe3ieucs5cjoxgr7d5p3qsyt4nkuppk3f2nke"));
+        assert!(IpfsClient::validate_cid(
+            "bafybeigdyrzt3nz6mx6mxwe3ieucs5cjoxgr7d5p3qsyt4nkuppk3f2nke"
+        ));
         assert!(!IpfsClient::validate_cid("not-a-valid-cid"));
     }
 

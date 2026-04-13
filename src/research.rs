@@ -31,7 +31,6 @@ pub enum ResearchDepth {
     Exhaustive,
 }
 
-
 impl std::str::FromStr for ResearchDepth {
     type Err = ();
 
@@ -47,7 +46,6 @@ impl std::str::FromStr for ResearchDepth {
 }
 
 impl ResearchDepth {
-
     /// Get the number of search iterations for this depth.
     pub fn iterations(&self) -> usize {
         match self {
@@ -352,8 +350,8 @@ impl ResearchOrchestrator {
         let confidence = if findings.is_empty() {
             0.3
         } else {
-            let avg_confidence: f32 = findings.iter().map(|f| f.confidence).sum::<f32>()
-                / findings.len() as f32;
+            let avg_confidence: f32 =
+                findings.iter().map(|f| f.confidence).sum::<f32>() / findings.len() as f32;
             avg_confidence * 0.8 + 0.2 // Baseline confidence
         };
 
@@ -366,8 +364,7 @@ impl ResearchOrchestrator {
             confidence,
             methodology: format!(
                 "Depth: {:?}, Sources: {}, Iterations: 1",
-                query.depth,
-                max_sources
+                query.depth, max_sources
             ),
             depth: query.depth,
             latency_ms: elapsed.as_millis() as u64,
@@ -409,14 +406,16 @@ impl ResearchOrchestrator {
             }
         }
 
-        prompt.push_str("\n\nProvide your research synthesis in the following format:\n\
+        prompt.push_str(
+            "\n\nProvide your research synthesis in the following format:\n\
             SUMMARY: <your summary>\n\
             FINDINGS:\n\
             1. [confidence:high/medium/low] <finding> [source citations]\n\
             2. ...\n\
             RELATED QUESTIONS:\n\
             - <question 1>\n\
-            - <question 2>\n");
+            - <question 2>\n",
+        );
 
         prompt
     }
@@ -459,7 +458,9 @@ impl ResearchOrchestrator {
                     }
                     "related" => {
                         let question = trimmed
-                            .trim_start_matches(|c: char| c == '-' || c == '•' || c.is_ascii_digit() || c == '.')
+                            .trim_start_matches(|c: char| {
+                                c == '-' || c == '•' || c.is_ascii_digit() || c == '.'
+                            })
                             .trim()
                             .to_string();
                         if !question.is_empty() {
@@ -505,9 +506,10 @@ impl ResearchOrchestrator {
         for part in trimmed.split('[') {
             if let Some(num_str) = part.split(']').next()
                 && let Ok(num) = num_str.parse::<usize>()
-                    && num > 0 {
-                        source_indices.push(num - 1); // Convert to 0-indexed
-                    }
+                && num > 0
+            {
+                source_indices.push(num - 1); // Convert to 0-indexed
+            }
         }
 
         // Clean statement
@@ -565,7 +567,7 @@ mod tests {
 
     #[test]
     fn test_research_session() {
-        let mut session = ResearchSession::new("Test topic");
+        let session = ResearchSession::new("Test topic");
         assert_eq!(session.topic, "Test topic");
         assert!(session.queries.is_empty());
         assert!(session.reports.is_empty());

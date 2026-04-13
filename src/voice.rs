@@ -30,7 +30,6 @@ pub enum AudioFormat {
     Pcm,
 }
 
-
 impl AudioFormat {
     /// Get the file extension for this format.
     pub fn extension(&self) -> &'static str {
@@ -57,7 +56,6 @@ impl AudioFormat {
             AudioFormat::Pcm => "audio/pcm",
         }
     }
-
 }
 
 impl std::str::FromStr for AudioFormat {
@@ -92,7 +90,6 @@ pub enum TtsProvider {
     #[default]
     WebSpeech,
 }
-
 
 /// Request for text-to-speech synthesis.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,9 +265,10 @@ impl VoiceOrchestrator {
 
         // Check for OpenAI TTS availability
         if let Some(provider) = self.ai.providers().iter().find(|p| p.name == "openai")
-            && provider.enabled {
-                available_providers.push("openai".into());
-            }
+            && provider.enabled
+        {
+            available_providers.push("openai".into());
+        }
 
         // Web Speech API is always "available" (browser-side)
         available_providers.push("web-speech".into());
@@ -567,8 +565,8 @@ impl VoiceOrchestrator {
 
     /// Fetch ElevenLabs voices from API.
     fn elevenlabs_voices(&self) -> Result<Vec<VoiceInfo>> {
-        let api_key = std::env::var("ELEVENLABS_API_KEY")
-            .with_context(|| "ELEVENLABS_API_KEY not found")?;
+        let api_key =
+            std::env::var("ELEVENLABS_API_KEY").with_context(|| "ELEVENLABS_API_KEY not found")?;
 
         let response = self
             .http_client
@@ -605,10 +603,7 @@ impl VoiceOrchestrator {
                 id: v.voice_id,
                 name: v.name,
                 provider: TtsProvider::ElevenLabs,
-                language: v
-                    .labels
-                    .as_ref()
-                    .and_then(|l| l.get("language").cloned()),
+                language: v.labels.as_ref().and_then(|l| l.get("language").cloned()),
                 gender: v.labels.as_ref().and_then(|l| l.get("gender").cloned()),
                 preview_url: v.preview_url,
             })

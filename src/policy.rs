@@ -93,8 +93,7 @@ pub fn load_policy(path: &Path) -> Result<Value> {
     Ok(parsed)
 }
 
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct PolicySummary {
     pub doh_mode: Option<String>,
     pub doh_template: Option<String>,
@@ -106,7 +105,6 @@ pub struct PolicySummary {
     pub extension_forcelist: Vec<String>,
     pub remote_debugging_allowed: Option<bool>,
 }
-
 
 pub fn summarize_policy(value: &Value) -> PolicySummary {
     let mut summary = PolicySummary::default();
@@ -131,12 +129,13 @@ pub fn summarize_policy(value: &Value) -> PolicySummary {
         summary.remote_debugging_allowed =
             map.get("RemoteDebuggingAllowed").and_then(|v| v.as_bool());
         if let Some(list) = map.get("ExtensionInstallForcelist")
-            && let Some(array) = list.as_array() {
-                summary.extension_forcelist = array
-                    .iter()
-                    .filter_map(|entry| entry.as_str().map(|s| s.to_string()))
-                    .collect();
-            }
+            && let Some(array) = list.as_array()
+        {
+            summary.extension_forcelist = array
+                .iter()
+                .filter_map(|entry| entry.as_str().map(|s| s.to_string()))
+                .collect();
+        }
     }
     summary
 }

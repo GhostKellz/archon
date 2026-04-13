@@ -379,9 +379,10 @@ fn merge_args(base: Vec<String>, extras: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
     for arg in base.into_iter().chain(extras.into_iter()) {
         if !seen.insert(arg.clone())
-            && let Some(pos) = merged.iter().position(|existing| existing == &arg) {
-                merged.remove(pos);
-            }
+            && let Some(pos) = merged.iter().position(|existing| existing == &arg)
+        {
+            merged.remove(pos);
+        }
         merged.push(arg);
     }
     merged

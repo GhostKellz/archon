@@ -34,7 +34,6 @@ pub enum VisionAnalysisType {
     VisualDiff,
 }
 
-
 impl VisionAnalysisType {
     /// Returns a system prompt tailored to this analysis type.
     pub fn system_prompt(&self) -> &'static str {
@@ -320,14 +319,17 @@ impl VisionOrchestrator {
     }
 
     /// Load and analyze an image file.
-    pub fn analyze_file(&self, path: &Path, analysis_type: VisionAnalysisType) -> Result<VisionResponse> {
+    pub fn analyze_file(
+        &self,
+        path: &Path,
+        analysis_type: VisionAnalysisType,
+    ) -> Result<VisionResponse> {
         let image_data = std::fs::read(path)
             .with_context(|| format!("Failed to read image file: {}", path.display()))?;
 
         let mime_type = Self::mime_from_extension(path);
 
-        let request = VisionRequest::new(image_data, mime_type)
-            .with_analysis_type(analysis_type);
+        let request = VisionRequest::new(image_data, mime_type).with_analysis_type(analysis_type);
 
         self.analyze(&request)
     }
@@ -357,10 +359,9 @@ impl VisionOrchestrator {
             _ => return false,
         };
 
-        self.settings
-            .supported_formats
-            .iter()
-            .any(|format| format.eq_ignore_ascii_case(extension) || format.eq_ignore_ascii_case(mime_type))
+        self.settings.supported_formats.iter().any(|format| {
+            format.eq_ignore_ascii_case(extension) || format.eq_ignore_ascii_case(mime_type)
+        })
     }
 
     /// Resolve which provider to use for vision.
@@ -389,9 +390,11 @@ impl VisionOrchestrator {
         if let Some(ref default) = self.settings.default_provider {
             let provider = self.ai.providers().iter().find(|p| &p.name == default);
             if let Some(p) = provider
-                && p.enabled && p.capabilities.vision {
-                    return Ok(default.clone());
-                }
+                && p.enabled
+                && p.capabilities.vision
+            {
+                return Ok(default.clone());
+            }
         }
 
         // Find any enabled vision-capable provider

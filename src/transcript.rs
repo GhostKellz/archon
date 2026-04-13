@@ -222,11 +222,12 @@ impl TranscriptStore {
         let mut remove: HashSet<Uuid> = HashSet::new();
 
         if let Some(max_entries) = self.retention.max_entries
-            && entries.len() > max_entries {
-                for entry in entries.iter().skip(max_entries) {
-                    remove.insert(entry.id);
-                }
+            && entries.len() > max_entries
+        {
+            for entry in entries.iter().skip(max_entries) {
+                remove.insert(entry.id);
             }
+        }
 
         if let Some(max_age) = self.retention.max_age {
             let cutoff = Utc::now() - max_age;
@@ -389,7 +390,6 @@ pub enum TranscriptSource {
     #[default]
     Unknown,
 }
-
 
 impl std::fmt::Display for TranscriptSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

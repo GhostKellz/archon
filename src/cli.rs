@@ -776,7 +776,10 @@ fn print_diagnostics(launcher: &Launcher) -> Result<()> {
     if vision.vision_providers.is_empty() {
         println!("    - providers        : (none available)");
     } else {
-        println!("    - providers        : {}", vision.vision_providers.join(", "));
+        println!(
+            "    - providers        : {}",
+            vision.vision_providers.join(", ")
+        );
     }
     for issue in &vision.issues {
         println!("    - ⚠ {issue}");
@@ -789,7 +792,10 @@ fn print_diagnostics(launcher: &Launcher) -> Result<()> {
     if voice.available_providers.is_empty() {
         println!("    - providers        : (none available)");
     } else {
-        println!("    - providers        : {}", voice.available_providers.join(", "));
+        println!(
+            "    - providers        : {}",
+            voice.available_providers.join(", ")
+        );
     }
     if let Some(voice_name) = &voice.default_voice {
         println!("    - default_voice    : {}", voice_name);
@@ -818,18 +824,34 @@ fn print_diagnostics(launcher: &Launcher) -> Result<()> {
 
     println!("\n  Automation:");
     println!("    - enabled          : {}", automation.enabled);
-    println!("    - require_confirm  : {}", automation.require_confirmation);
+    println!(
+        "    - require_confirm  : {}",
+        automation.require_confirmation
+    );
     println!("    - sandbox_mode     : {}", automation.sandbox_mode);
-    println!("    - allowed_domains  : {}", automation.allowed_domains_count);
-    println!("    - blocked_domains  : {}", automation.blocked_domains_count);
-    println!("    - actions_session  : {}", automation.actions_this_session);
+    println!(
+        "    - allowed_domains  : {}",
+        automation.allowed_domains_count
+    );
+    println!(
+        "    - blocked_domains  : {}",
+        automation.blocked_domains_count
+    );
+    println!(
+        "    - actions_session  : {}",
+        automation.actions_this_session
+    );
     for issue in &automation.issues {
         println!("    - ⚠ {issue}");
     }
 
     println!("\n  IPFS:");
     println!("    - enabled          : {}", ipfs.enabled);
-    let local_status = if ipfs.local_node_available { "available" } else { "unavailable" };
+    let local_status = if ipfs.local_node_available {
+        "available"
+    } else {
+        "unavailable"
+    };
     println!("    - local_node       : {}", local_status);
     println!("    - prefer_local     : {}", ipfs.prefer_local);
     println!("    - auto_pin         : {}", ipfs.auto_pin);
@@ -856,11 +878,17 @@ fn print_diagnostics(launcher: &Launcher) -> Result<()> {
 
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
-    let mut launcher = Launcher::bootstrap(cli.config.clone())?;
-    let telemetry_settings = launcher.settings().telemetry.clone();
+    let config_path = match cli.config.clone() {
+        Some(path) => path,
+        None => crate::config::default_config_path()?,
+    };
+    let telemetry_settings = crate::config::LaunchSettings::load_or_default(&config_path)?
+        .telemetry
+        .clone();
     if let Err(err) = crate::telemetry::init_tracing("archon", cli.verbose, &telemetry_settings) {
         eprintln!("warning: failed to initialise tracing subscriber: {err}");
     }
+    let mut launcher = Launcher::bootstrap(Some(config_path))?;
 
     if cli.sync_ghostdns_policy {
         let report = launcher.sync_ghostdns_policy(cli.force)?;
@@ -994,9 +1022,10 @@ pub fn run() -> Result<()> {
     }
 
     if let Some(target) = cli.target.clone()
-        && handle_target(&mut launcher, &cli, &target)? {
-            return Ok(());
-        }
+        && handle_target(&mut launcher, &cli, &target)?
+    {
+        return Ok(());
+    }
 
     if cli.chat.is_some() || !cli.chat_attachments.is_empty() {
         let prompt_text = cli.chat.clone().unwrap_or_default();
@@ -1053,7 +1082,11 @@ pub fn run() -> Result<()> {
             println!("  No instances configured.");
         } else {
             for health in &statuses {
-                let status = if health.healthy { "healthy" } else { "unhealthy" };
+                let status = if health.healthy {
+                    "healthy"
+                } else {
+                    "unhealthy"
+                };
                 println!("  {} : {} ({})", health.instance, status, health.url);
                 if let Some(version) = &health.version {
                     println!("    version: {version}");
@@ -1076,7 +1109,11 @@ pub fn run() -> Result<()> {
         } else {
             println!("N8N Workflows ({} total):", workflows.len());
             for workflow in workflows {
-                let status = if workflow.active { "active" } else { "inactive" };
+                let status = if workflow.active {
+                    "active"
+                } else {
+                    "inactive"
+                };
                 println!("  {} : {} [{}]", workflow.id, workflow.name, status);
             }
         }
@@ -1300,14 +1337,16 @@ fn determine_ens_destination(
     }
 
     if let Some(url) = resolution.records.get("url")
-        && is_http_url(url) {
-            return Some(append_remainder(url, remainder));
-        }
+        && is_http_url(url)
+    {
+        return Some(append_remainder(url, remainder));
+    }
 
     if let Some(contenthash) = resolution.records.get("contenthash")
-        && is_http_url(contenthash) {
-            return Some(append_remainder(contenthash, remainder));
-        }
+        && is_http_url(contenthash)
+    {
+        return Some(append_remainder(contenthash, remainder));
+    }
 
     if resolution.name.ends_with(".eth") {
         let stem = resolution.name.trim_end_matches(".eth");

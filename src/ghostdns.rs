@@ -245,12 +245,13 @@ impl GhostDns {
         let provider = provider_lookup.unwrap_or_else(default_upstream_provider);
         if provider_lookup.is_none()
             && let Some(requested) = &requested_profile
-                && !requested.trim().is_empty() {
-                    issues.push(format!(
-                        "Unknown upstream profile '{}'; using {}",
-                        requested, provider.name
-                    ));
-                }
+            && !requested.trim().is_empty()
+        {
+            issues.push(format!(
+                "Unknown upstream profile '{}'; using {}",
+                requested, provider.name
+            ));
+        }
 
         GhostDnsHealthReport {
             enabled: self.settings.enabled,

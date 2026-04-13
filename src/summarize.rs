@@ -34,7 +34,6 @@ pub enum SummarizeStyle {
     Outline,
 }
 
-
 impl std::str::FromStr for SummarizeStyle {
     type Err = ();
 
@@ -53,7 +52,6 @@ impl std::str::FromStr for SummarizeStyle {
 }
 
 impl SummarizeStyle {
-
     /// Get the system prompt for this style.
     pub fn system_prompt(&self) -> &'static str {
         match self {
@@ -305,10 +303,7 @@ impl SummarizeOrchestrator {
 
         // Add language constraint if specified
         if let Some(ref lang) = request.language {
-            prompt.push_str(&format!(
-                "\n\nWrite the summary in {}.",
-                lang
-            ));
+            prompt.push_str(&format!("\n\nWrite the summary in {}.", lang));
         }
 
         // Add metadata context if available
@@ -391,7 +386,9 @@ impl SummarizeOrchestrator {
             .map(|line| {
                 // Remove leading numbers, dashes, bullets
                 line.trim()
-                    .trim_start_matches(|c: char| c.is_ascii_digit() || c == '.' || c == ')' || c == '-' || c == '•')
+                    .trim_start_matches(|c: char| {
+                        c.is_ascii_digit() || c == '.' || c == ')' || c == '-' || c == '•'
+                    })
                     .trim()
                     .to_string()
             })
@@ -417,7 +414,10 @@ mod tests {
 
     #[test]
     fn test_summarize_style_parsing() {
-        assert_eq!("bullets".parse::<SummarizeStyle>(), Ok(SummarizeStyle::Bullets));
+        assert_eq!(
+            "bullets".parse::<SummarizeStyle>(),
+            Ok(SummarizeStyle::Bullets)
+        );
         assert_eq!("eli5".parse::<SummarizeStyle>(), Ok(SummarizeStyle::Eli5));
         assert!("unknown".parse::<SummarizeStyle>().is_err());
     }

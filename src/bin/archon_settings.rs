@@ -158,7 +158,8 @@ fn edit_ipfs_gateway(theme: &ColorfulTheme, resolvers: &mut CryptoResolverSettin
         .with_prompt(prompt)
         .allow_empty(true)
         .with_initial_text(current)
-        .interact_text() {
+        .interact_text()
+    {
         let trimmed = value.trim().to_string();
         if trimmed.is_empty() {
             resolvers.ipfs_gateway = None;
