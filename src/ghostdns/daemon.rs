@@ -12,6 +12,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
+use axum_server::tls_rustls::RustlsConfig as AxumRustlsConfig;
 use axum::{
     Router,
     body::{Body, Bytes},
@@ -38,7 +39,7 @@ use tokio::{
     sync::Mutex,
     task,
 };
-use tokio_rustls::rustls::{ClientConfig, RootCertStore, ServerConfig as RustlsServerConfig};
+use tokio_rustls::rustls::{ClientConfig, RootCertStore, ServerConfig as RustlsServerConfig, crypto::aws_lc_rs};
 use tokio_rustls::{TlsAcceptor, TlsConnector};
 use tracing::{error, info, warn};
 
@@ -932,6 +933,7 @@ pub struct GhostDnsDaemon {
 type DotRuntime = (String, Arc<RustlsServerConfig>);
 type DoqRuntime = (String, QuinnServerConfig);
 type IpfsRuntime = (String, Arc<IpfsGateway>);
+type DohTlsRuntime = (String, AxumRustlsConfig);
 
 impl GhostDnsDaemon {
     pub fn new(mut config: GhostDnsRuntimeConfig, crypto: CryptoStack) -> Result<Self> {
@@ -1057,6 +1059,98 @@ impl GhostDnsDaemon {
         }
     }
 
+    async fn build_doh_tls_runtime(&self) -> Result<Option<DohTlsRuntime>> {
+        let _ = aws_lc_rs::default_provider().install_default();
+        let doh_addr = self.config.server.doh_listen.trim().to_string();
+        match (
+            self.config.server.dot_cert_path.as_ref(),
+            self.config.server.dot_key_path.as_ref(),
+        ) {
+            (Some(cert_path), Some(key_path)) => {
+                let tls = AxumRustlsConfig::from_pem_file(cert_path, key_path)
+                    .await
+                    .with_context(|| format!("Failed to initialise DoH TLS config for {doh_addr}"))?;
+                Ok(Some((doh_addr, tls)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn push_optional_runtime_tasks(
+        &self,
+        tasks: &mut Vec<RuntimeTask>,
+        state: &Arc<DohState>,
+        metrics_addr: Option<String>,
+        dot_runtime: Option<DotRuntime>,
+        doq_runtime: Option<DoqRuntime>,
+        ipfs_runtime: Option<IpfsRuntime>,
+    ) {
+        if let Some(metrics_addr) = metrics_addr {
+            let metrics = self.metrics.clone();
+            tasks.push(Box::pin(async move {
+                run_metrics_server(&metrics_addr, metrics).await
+            }));
+        }
+
+        if let Some((dot_addr, tls_config)) = dot_runtime {
+            let state = state.clone();
+            tasks.push(Box::pin(async move {
+                run_dot_server(&dot_addr, tls_config, state).await
+            }));
+        }
+
+        if let Some((doq_addr, server_config)) = doq_runtime {
+            let state = state.clone();
+            tasks.push(Box::pin(async move {
+                run_doq_server(&doq_addr, server_config, state).await
+            }));
+        }
+
+        if let Some((gateway_addr, gateway)) = ipfs_runtime {
+            tasks.push(Box::pin(async move {
+                run_ipfs_gateway(&gateway_addr, gateway).await
+            }));
+        }
+    }
+
+    async fn build_doh_task(
+        &self,
+        addr: SocketAddr,
+        state: Arc<DohState>,
+        router: Router,
+        doh_tls_runtime: Option<DohTlsRuntime>,
+    ) -> Result<RuntimeTask> {
+        if let Some((tls_addr, tls_config)) = doh_tls_runtime {
+            let socket_addr: SocketAddr = tls_addr
+                .parse()
+                .with_context(|| format!("Invalid DoH listener address: {tls_addr}"))?;
+            info!(listener = %socket_addr, path = %state.doh_path, "Starting GhostDNS DoH TLS server");
+            let make_service = router.into_make_service();
+            let task: RuntimeTask = Box::pin(async move {
+                axum_server::bind_rustls(socket_addr, tls_config)
+                    .serve(make_service)
+                    .await
+                    .context("GhostDNS DoH TLS server terminated unexpectedly")
+            });
+            Ok(task)
+        } else {
+            let listener = TcpListener::bind(addr)
+                .await
+                .with_context(|| format!("Failed to bind DoH listener at {addr}"))?;
+
+            warn!(listener = %addr, path = %state.doh_path, "Starting GhostDNS DoH server without TLS; DoH template should not be advertised as https until certificates are configured");
+
+            let doh_server = axum::serve(listener, router.into_make_service())
+                .with_graceful_shutdown(shutdown_signal());
+            let task: RuntimeTask = Box::pin(async move {
+                doh_server
+                    .await
+                    .context("GhostDNS DoH server terminated unexpectedly")
+            });
+            Ok(task)
+        }
+    }
+
     fn build_doq_runtime(&self) -> Option<DoqRuntime> {
         let doq_addr = Self::trimmed_option(self.config.server.doq_listen.as_ref())?;
         let cert_path = self.config.server.doq_cert_path.as_ref().or(self
@@ -1157,53 +1251,26 @@ impl GhostDnsDaemon {
             .route("/*tail", get(doh_get).post(doh_post))
             .with_state(state.clone());
 
-        let listener = TcpListener::bind(addr)
-            .await
-            .with_context(|| format!("Failed to bind DoH listener at {addr}"))?;
-
-        info!(listener = %addr, path = %state.doh_path, "Starting GhostDNS DoH server");
-
-        let doh_server = axum::serve(listener, router.into_make_service())
-            .with_graceful_shutdown(shutdown_signal());
+        let doh_tls_runtime = self.build_doh_tls_runtime().await?;
 
         let metrics_addr = self.config.server.metrics_listen.clone();
         let dot_runtime = self.build_dot_runtime();
         let doq_runtime = self.build_doq_runtime();
         let ipfs_runtime = self.build_ipfs_runtime();
 
-        let mut tasks: Vec<Pin<Box<dyn Future<Output = Result<()>> + Send>>> = Vec::new();
-        tasks.push(Box::pin(async move {
-            doh_server
-                .await
-                .context("GhostDNS DoH server terminated unexpectedly")
-        }));
-
-        if let Some(metrics_addr) = metrics_addr {
-            let metrics = self.metrics.clone();
-            tasks.push(Box::pin(async move {
-                run_metrics_server(&metrics_addr, metrics).await
-            }));
-        }
-
-        if let Some((dot_addr, tls_config)) = dot_runtime {
-            let state = state.clone();
-            tasks.push(Box::pin(async move {
-                run_dot_server(&dot_addr, tls_config, state).await
-            }));
-        }
-
-        if let Some((doq_addr, server_config)) = doq_runtime {
-            let state = state.clone();
-            tasks.push(Box::pin(async move {
-                run_doq_server(&doq_addr, server_config, state).await
-            }));
-        }
-
-        if let Some((gateway_addr, gateway)) = ipfs_runtime {
-            tasks.push(Box::pin(async move {
-                run_ipfs_gateway(&gateway_addr, gateway).await
-            }));
-        }
+        let mut tasks: Vec<RuntimeTask> = Vec::new();
+        tasks.push(
+            self.build_doh_task(addr, state.clone(), router, doh_tls_runtime)
+                .await?,
+        );
+        self.push_optional_runtime_tasks(
+            &mut tasks,
+            &state,
+            metrics_addr,
+            dot_runtime,
+            doq_runtime,
+            ipfs_runtime,
+        );
 
         try_join_all(tasks).await?;
 
@@ -1267,90 +1334,6 @@ struct DohState {
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
     info!("Shutdown signal received; stopping GhostDNS");
-}
-
-async fn run_metrics_server(addr: &str, metrics: Arc<GhostDnsMetrics>) -> Result<()> {
-    let socket_addr: SocketAddr = addr
-        .parse()
-        .with_context(|| format!("Invalid metrics listener address: {addr}"))?;
-
-    let listener = TcpListener::bind(socket_addr)
-        .await
-        .with_context(|| format!("Failed to bind metrics listener at {socket_addr}"))?;
-
-    info!(listener = %socket_addr, "Starting GhostDNS metrics server");
-
-    let app = Router::new()
-        .route("/metrics", get(metrics_handler))
-        .with_state(metrics);
-
-    axum::serve(listener, app.into_make_service())
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("GhostDNS metrics server terminated unexpectedly")
-}
-
-async fn run_doq_server(
-    addr: &str,
-    server_config: QuinnServerConfig,
-    state: Arc<DohState>,
-) -> Result<()> {
-    let socket_addr: SocketAddr = addr
-        .parse()
-        .with_context(|| format!("Invalid DoQ listener address: {addr}"))?;
-
-    let endpoint = Endpoint::server(server_config, socket_addr)
-        .with_context(|| format!("Failed to bind DoQ listener at {socket_addr}"))?;
-
-    info!(listener = %socket_addr, "Starting GhostDNS DoQ server");
-
-    let permits = Arc::new(tokio::sync::Semaphore::new(MAX_DOQ_CONNECTIONS));
-    let shutdown = shutdown_signal();
-    tokio::pin!(shutdown);
-    loop {
-        tokio::select! {
-            _ = &mut shutdown => {
-                info!("Shutdown signal received; stopping GhostDNS DoQ server");
-                break;
-            }
-            incoming_conn = endpoint.accept() => {
-                match incoming_conn {
-                    Some(connecting) => {
-                        let permit = match permits.clone().try_acquire_owned() {
-                            Ok(permit) => permit,
-                            Err(_) => {
-                                warn!("Rejecting DoQ connection because the connection limit was reached");
-                                continue;
-                            }
-                        };
-                        let state = state.clone();
-                        tokio::spawn(async move {
-                            let _permit = permit;
-                            match tokio::time::timeout(DOQ_HANDSHAKE_TIMEOUT, connecting).await {
-                                Ok(Ok(connection)) => {
-                                    if let Err(err) = handle_doq_connection(connection, state).await {
-                                        warn!(error = %err, "DoQ connection terminated with error");
-                                    }
-                                }
-                                Ok(Err(err)) => {
-                                    warn!(error = %err, "Failed to establish DoQ connection");
-                                }
-                                Err(_) => {
-                                    warn!("Timed out establishing DoQ connection");
-                                }
-                            }
-                        });
-                    }
-                    None => break,
-                }
-            }
-        }
-    }
-
-    endpoint.close(0u32.into(), b"shutdown");
-    endpoint.wait_idle().await;
-
-    Ok(())
 }
 
 async fn run_ipfs_gateway(addr: &str, gateway: Arc<IpfsGateway>) -> Result<()> {
@@ -1420,115 +1403,6 @@ async fn ipfs_gateway_ipns(
     }
 }
 
-async fn handle_doq_connection(connection: quinn::Connection, state: Arc<DohState>) -> Result<()> {
-    loop {
-        match connection.accept_bi().await {
-            Ok((send, recv)) => {
-                let state = state.clone();
-                tokio::spawn(async move {
-                    if let Err(err) = handle_doq_stream(send, recv, state).await {
-                        warn!(error = %err, "DoQ stream terminated with error");
-                    }
-                });
-            }
-            Err(quinn::ConnectionError::ApplicationClosed { .. })
-            | Err(quinn::ConnectionError::LocallyClosed) => break,
-            Err(err) => {
-                return Err(anyhow!("DoQ connection error: {err}"));
-            }
-        }
-    }
-
-    Ok(())
-}
-
-async fn handle_doq_stream(
-    mut send: quinn::SendStream,
-    mut recv: quinn::RecvStream,
-    state: Arc<DohState>,
-) -> Result<()> {
-    let mut len_buf = [0u8; 2];
-    if tokio::time::timeout(
-        DOQ_IO_TIMEOUT,
-        AsyncReadExt::read_exact(&mut recv, &mut len_buf),
-    )
-    .await
-    .is_err()
-    {
-        return Err(anyhow!("timed out reading DoQ frame length"));
-    }
-
-    let len = u16::from_be_bytes(len_buf) as usize;
-    if len == 0 {
-        return Ok(());
-    }
-
-    if len > MAX_DNS_MESSAGE_BYTES {
-        return Err(anyhow!("DoQ frame exceeded size limit"));
-    }
-
-    let mut payload = vec![0u8; len];
-    match tokio::time::timeout(
-        DOQ_IO_TIMEOUT,
-        AsyncReadExt::read_exact(&mut recv, &mut payload),
-    )
-    .await
-    {
-        Err(_) => return Err(anyhow!("timed out reading DoQ frame payload")),
-        Ok(Err(err)) => return Err(err).context("Failed to read DoQ frame payload"),
-        Ok(Ok(_)) => {}
-    }
-
-    match resolve_dns_payload(state.clone(), payload.clone()).await {
-        Ok(response) => {
-            write_doq_response(&mut send, &response).await?;
-        }
-        Err(DnsProcessError::BadRequest(_)) => return Ok(()),
-        Err(DnsProcessError::Internal(_)) => {
-            if let Some(response) = build_error_response(&payload, ResponseCode::ServFail) {
-                write_doq_response(&mut send, &response).await?;
-            }
-        }
-    }
-
-    send.finish().context("Failed to finish DoQ stream")?;
-    Ok(())
-}
-
-async fn write_doq_response(stream: &mut quinn::SendStream, payload: &[u8]) -> Result<()> {
-    if payload.len() >= u16::MAX as usize {
-        anyhow::bail!("DNS message exceeds DoQ frame size limit");
-    }
-    stream
-        .write_all(&(payload.len() as u16).to_be_bytes())
-        .await
-        .context("Failed to write DoQ frame length")?;
-    stream
-        .write_all(payload)
-        .await
-        .context("Failed to write DoQ frame payload")?;
-    Ok(())
-}
-
-async fn metrics_handler(State(metrics): State<Arc<GhostDnsMetrics>>) -> Response {
-    match metrics.render() {
-        Ok(buffer) => {
-            let mut response = Response::new(Body::from(buffer));
-            *response.status_mut() = StatusCode::OK;
-            response.headers_mut().insert(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static(PROMETHEUS_CONTENT_TYPE),
-            );
-            response
-        }
-        Err(err) => {
-            error!(error = %err, "Failed to render GhostDNS metrics");
-            let mut response = Response::new(Body::from(err.to_string()));
-            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
-            response
-        }
-    }
-}
 
 struct DohResponseError {
     status: StatusCode,
@@ -2215,136 +2089,6 @@ mod tests {
     }
 }
 
-async fn run_dot_server(
-    addr: &str,
-    tls_config: Arc<RustlsServerConfig>,
-    state: Arc<DohState>,
-) -> Result<()> {
-    let socket_addr: SocketAddr = addr
-        .parse()
-        .with_context(|| format!("Invalid DoT listener address: {addr}"))?;
-
-    let listener = TcpListener::bind(socket_addr)
-        .await
-        .with_context(|| format!("Failed to bind DoT listener at {socket_addr}"))?;
-
-    let acceptor = TlsAcceptor::from(tls_config);
-    let permits = Arc::new(tokio::sync::Semaphore::new(MAX_DOT_CONNECTIONS));
-
-    info!(listener = %socket_addr, "Starting GhostDNS DoT server");
-
-    let shutdown = shutdown_signal();
-    tokio::pin!(shutdown);
-    loop {
-        tokio::select! {
-            biased;
-            _ = &mut shutdown => {
-                info!("Shutdown signal received; stopping GhostDNS DoT server");
-                break;
-            }
-            accept_result = listener.accept() => {
-                let (stream, peer) = match accept_result {
-                    Ok(pair) => pair,
-                    Err(err) => {
-                        error!(error = %err, "Failed to accept DoT connection");
-                        continue;
-                    }
-                };
-
-                let permit = match permits.clone().try_acquire_owned() {
-                    Ok(permit) => permit,
-                    Err(_) => {
-                        warn!(peer = %peer, "Rejecting DoT connection because the connection limit was reached");
-                        continue;
-                    }
-                };
-
-                let acceptor = acceptor.clone();
-                let state = state.clone();
-                tokio::spawn(async move {
-                    let _permit = permit;
-                    if let Err(err) = handle_dot_connection(acceptor, stream, state).await {
-                        warn!(peer = %peer, error = %err, "DoT connection terminated with error");
-                    }
-                });
-            }
-        }
-    }
-
-    Ok(())
-}
-
-async fn handle_dot_connection(
-    acceptor: TlsAcceptor,
-    stream: TcpStream,
-    state: Arc<DohState>,
-) -> Result<()> {
-    let mut tls_stream = tokio::time::timeout(DOT_IO_TIMEOUT, acceptor.accept(stream))
-        .await
-        .context("timed out during DoT client TLS handshake")?
-        .context("TLS handshake with DoT client failed")?;
-
-    loop {
-        let mut len_buf = [0u8; 2];
-        match tokio::time::timeout(DOT_IO_TIMEOUT, tls_stream.read_exact(&mut len_buf)).await {
-            Err(_) => return Err(anyhow!("timed out reading DoT frame length")),
-            Ok(Ok(_)) => {}
-            Ok(Err(err)) if err.kind() == io::ErrorKind::UnexpectedEof => break,
-            Ok(Err(err)) => return Err(err).context("Failed to read DoT frame length"),
-        }
-        let len = u16::from_be_bytes(len_buf) as usize;
-
-        if len == 0 {
-            continue;
-        }
-
-        if len > MAX_DNS_MESSAGE_BYTES {
-            return Err(anyhow!("DoT frame exceeded size limit"));
-        }
-
-        let mut payload = vec![0u8; len];
-        match tokio::time::timeout(DOT_IO_TIMEOUT, tls_stream.read_exact(&mut payload)).await {
-            Err(_) => return Err(anyhow!("timed out reading DoT frame payload")),
-            Ok(Err(err)) => return Err(err).context("Failed to read DoT frame payload"),
-            Ok(Ok(_)) => {}
-        }
-
-        match resolve_dns_payload(state.clone(), payload.clone()).await {
-            Ok(response) => {
-                write_dot_response(&mut tls_stream, &response).await?;
-            }
-            Err(DnsProcessError::BadRequest(_)) => {
-                // Ignore malformed queries.
-                continue;
-            }
-            Err(DnsProcessError::Internal(_)) => {
-                if let Some(response) = build_error_response(&payload, ResponseCode::ServFail) {
-                    write_dot_response(&mut tls_stream, &response).await?;
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-async fn write_dot_response<S>(stream: &mut S, payload: &[u8]) -> Result<()>
-where
-    S: AsyncWrite + Unpin,
-{
-    if payload.len() >= u16::MAX as usize {
-        anyhow::bail!("DNS message exceeds DoT frame size limit");
-    }
-    stream
-        .write_u16(payload.len() as u16)
-        .await
-        .context("Failed to write DoT frame length")?;
-    stream
-        .write_all(payload)
-        .await
-        .context("Failed to write DoT frame payload")?;
-    stream.flush().await.context("Failed to flush DoT frame")
-}
 
 fn build_error_response(query: &[u8], code: ResponseCode) -> Option<Vec<u8>> {
     let request = Message::from_vec(query).ok()?;
@@ -2380,6 +2124,7 @@ fn build_tls_server_config(
     key_path: &str,
     alpns: &[&[u8]],
 ) -> Result<Arc<RustlsServerConfig>> {
+    let _ = aws_lc_rs::default_provider().install_default();
     let mut config = RustlsServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(load_certificates(cert_path)?, load_private_key(key_path)?)
@@ -2402,6 +2147,8 @@ fn load_private_key(path: &str) -> Result<PrivateKeyDer<'static>> {
     Ok(key)
 }
 
+// DoH request parsing and response mapping stay together so HTTP-specific
+// behavior can be reviewed separately from the transport and upstream code.
 async fn doh_get(
     State(state): State<Arc<DohState>>,
     AxumPath(tail): AxumPath<String>,
@@ -2735,6 +2482,7 @@ async fn forward_via_dot(
 }
 
 fn build_dot_tls_connector() -> Result<TlsConnector> {
+    let _ = aws_lc_rs::default_provider().install_default();
     let mut root_store = RootCertStore::empty();
     root_store.extend(TLS_SERVER_ROOTS.iter().cloned());
 
@@ -2923,4 +2671,327 @@ impl Default for GhostDnsRuntimeConfig {
             security: SecuritySection::default(),
         }
     }
+}
+type RuntimeTask = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
+async fn run_metrics_server(addr: &str, metrics: Arc<GhostDnsMetrics>) -> Result<()> {
+    let socket_addr: SocketAddr = addr
+        .parse()
+        .with_context(|| format!("Invalid metrics listener address: {addr}"))?;
+
+    let listener = TcpListener::bind(socket_addr)
+        .await
+        .with_context(|| format!("Failed to bind metrics listener at {socket_addr}"))?;
+
+    info!(listener = %socket_addr, "Starting GhostDNS metrics server");
+
+    let app = Router::new()
+        .route("/metrics", get(metrics_handler))
+        .with_state(metrics);
+
+    axum::serve(listener, app.into_make_service())
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .context("GhostDNS metrics server terminated unexpectedly")
+}
+
+async fn run_doq_server(
+    addr: &str,
+    server_config: QuinnServerConfig,
+    state: Arc<DohState>,
+) -> Result<()> {
+    let socket_addr: SocketAddr = addr
+        .parse()
+        .with_context(|| format!("Invalid DoQ listener address: {addr}"))?;
+
+    let endpoint = Endpoint::server(server_config, socket_addr)
+        .with_context(|| format!("Failed to bind DoQ listener at {socket_addr}"))?;
+
+    info!(listener = %socket_addr, "Starting GhostDNS DoQ server");
+
+    let permits = Arc::new(tokio::sync::Semaphore::new(MAX_DOQ_CONNECTIONS));
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => {
+                info!("Shutdown signal received; stopping GhostDNS DoQ server");
+                break;
+            }
+            incoming_conn = endpoint.accept() => {
+                match incoming_conn {
+                    Some(connecting) => {
+                        let permit = match permits.clone().try_acquire_owned() {
+                            Ok(permit) => permit,
+                            Err(_) => {
+                                warn!("Rejecting DoQ connection because the connection limit was reached");
+                                continue;
+                            }
+                        };
+                        let state = state.clone();
+                        tokio::spawn(async move {
+                            let _permit = permit;
+                            match tokio::time::timeout(DOQ_HANDSHAKE_TIMEOUT, connecting).await {
+                                Ok(Ok(connection)) => {
+                                    if let Err(err) = handle_doq_connection(connection, state).await {
+                                        warn!(error = %err, "DoQ connection terminated with error");
+                                    }
+                                }
+                                Ok(Err(err)) => {
+                                    warn!(error = %err, "Failed to establish DoQ connection");
+                                }
+                                Err(_) => {
+                                    warn!("Timed out establishing DoQ connection");
+                                }
+                            }
+                        });
+                    }
+                    None => break,
+                }
+            }
+        }
+    }
+
+    endpoint.close(0u32.into(), b"shutdown");
+    endpoint.wait_idle().await;
+
+    Ok(())
+}
+
+async fn handle_doq_connection(connection: quinn::Connection, state: Arc<DohState>) -> Result<()> {
+    loop {
+        match connection.accept_bi().await {
+            Ok((send, recv)) => {
+                let state = state.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = handle_doq_stream(send, recv, state).await {
+                        warn!(error = %err, "DoQ stream terminated with error");
+                    }
+                });
+            }
+            Err(quinn::ConnectionError::ApplicationClosed { .. })
+            | Err(quinn::ConnectionError::LocallyClosed) => break,
+            Err(err) => {
+                return Err(anyhow!("DoQ connection error: {err}"));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_doq_stream(
+    mut send: quinn::SendStream,
+    mut recv: quinn::RecvStream,
+    state: Arc<DohState>,
+) -> Result<()> {
+    let mut len_buf = [0u8; 2];
+    if tokio::time::timeout(
+        DOQ_IO_TIMEOUT,
+        AsyncReadExt::read_exact(&mut recv, &mut len_buf),
+    )
+    .await
+    .is_err()
+    {
+        return Err(anyhow!("timed out reading DoQ frame length"));
+    }
+
+    let len = u16::from_be_bytes(len_buf) as usize;
+    if len == 0 {
+        return Ok(());
+    }
+
+    if len > MAX_DNS_MESSAGE_BYTES {
+        return Err(anyhow!("DoQ frame exceeded size limit"));
+    }
+
+    let mut payload = vec![0u8; len];
+    match tokio::time::timeout(
+        DOQ_IO_TIMEOUT,
+        AsyncReadExt::read_exact(&mut recv, &mut payload),
+    )
+    .await
+    {
+        Err(_) => return Err(anyhow!("timed out reading DoQ frame payload")),
+        Ok(Err(err)) => return Err(err).context("Failed to read DoQ frame payload"),
+        Ok(Ok(_)) => {}
+    }
+
+    match resolve_dns_payload(state.clone(), payload.clone()).await {
+        Ok(response) => {
+            write_doq_response(&mut send, &response).await?;
+        }
+        Err(DnsProcessError::BadRequest(_)) => return Ok(()),
+        Err(DnsProcessError::Internal(_)) => {
+            if let Some(response) = build_error_response(&payload, ResponseCode::ServFail) {
+                write_doq_response(&mut send, &response).await?;
+            }
+        }
+    }
+
+    send.finish().context("Failed to finish DoQ stream")?;
+    Ok(())
+}
+
+async fn write_doq_response(stream: &mut quinn::SendStream, payload: &[u8]) -> Result<()> {
+    if payload.len() >= u16::MAX as usize {
+        anyhow::bail!("DNS message exceeds DoQ frame size limit");
+    }
+    stream
+        .write_all(&(payload.len() as u16).to_be_bytes())
+        .await
+        .context("Failed to write DoQ frame length")?;
+    stream
+        .write_all(payload)
+        .await
+        .context("Failed to write DoQ frame payload")?;
+    Ok(())
+}
+
+async fn metrics_handler(State(metrics): State<Arc<GhostDnsMetrics>>) -> Response {
+    match metrics.render() {
+        Ok(buffer) => {
+            let mut response = Response::new(Body::from(buffer));
+            *response.status_mut() = StatusCode::OK;
+            response.headers_mut().insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(PROMETHEUS_CONTENT_TYPE),
+            );
+            response
+        }
+        Err(err) => {
+            error!(error = %err, "Failed to render GhostDNS metrics");
+            let mut response = Response::new(Body::from(err.to_string()));
+            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            response
+        }
+    }
+}
+async fn run_dot_server(
+    addr: &str,
+    tls_config: Arc<RustlsServerConfig>,
+    state: Arc<DohState>,
+) -> Result<()> {
+    let socket_addr: SocketAddr = addr
+        .parse()
+        .with_context(|| format!("Invalid DoT listener address: {addr}"))?;
+
+    let listener = TcpListener::bind(socket_addr)
+        .await
+        .with_context(|| format!("Failed to bind DoT listener at {socket_addr}"))?;
+
+    let acceptor = TlsAcceptor::from(tls_config);
+    let permits = Arc::new(tokio::sync::Semaphore::new(MAX_DOT_CONNECTIONS));
+
+    info!(listener = %socket_addr, "Starting GhostDNS DoT server");
+
+    let shutdown = shutdown_signal();
+    tokio::pin!(shutdown);
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut shutdown => {
+                info!("Shutdown signal received; stopping GhostDNS DoT server");
+                break;
+            }
+            accept_result = listener.accept() => {
+                let (stream, peer) = match accept_result {
+                    Ok(pair) => pair,
+                    Err(err) => {
+                        error!(error = %err, "Failed to accept DoT connection");
+                        continue;
+                    }
+                };
+
+                let permit = match permits.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        warn!(peer = %peer, "Rejecting DoT connection because the connection limit was reached");
+                        continue;
+                    }
+                };
+
+                let acceptor = acceptor.clone();
+                let state = state.clone();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    if let Err(err) = handle_dot_connection(acceptor, stream, state).await {
+                        warn!(peer = %peer, error = %err, "DoT connection terminated with error");
+                    }
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_dot_connection(
+    acceptor: TlsAcceptor,
+    stream: TcpStream,
+    state: Arc<DohState>,
+) -> Result<()> {
+    let mut tls_stream = tokio::time::timeout(DOT_IO_TIMEOUT, acceptor.accept(stream))
+        .await
+        .context("timed out during DoT client TLS handshake")?
+        .context("TLS handshake with DoT client failed")?;
+
+    loop {
+        let mut len_buf = [0u8; 2];
+        match tokio::time::timeout(DOT_IO_TIMEOUT, tls_stream.read_exact(&mut len_buf)).await {
+            Err(_) => return Err(anyhow!("timed out reading DoT frame length")),
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) if err.kind() == io::ErrorKind::UnexpectedEof => break,
+            Ok(Err(err)) => return Err(err).context("Failed to read DoT frame length"),
+        }
+        let len = u16::from_be_bytes(len_buf) as usize;
+
+        if len == 0 {
+            continue;
+        }
+
+        if len > MAX_DNS_MESSAGE_BYTES {
+            return Err(anyhow!("DoT frame exceeded size limit"));
+        }
+
+        let mut payload = vec![0u8; len];
+        match tokio::time::timeout(DOT_IO_TIMEOUT, tls_stream.read_exact(&mut payload)).await {
+            Err(_) => return Err(anyhow!("timed out reading DoT frame payload")),
+            Ok(Err(err)) => return Err(err).context("Failed to read DoT frame payload"),
+            Ok(Ok(_)) => {}
+        }
+
+        match resolve_dns_payload(state.clone(), payload.clone()).await {
+            Ok(response) => {
+                write_dot_response(&mut tls_stream, &response).await?;
+            }
+            Err(DnsProcessError::BadRequest(_)) => {
+                continue;
+            }
+            Err(DnsProcessError::Internal(_)) => {
+                if let Some(response) = build_error_response(&payload, ResponseCode::ServFail) {
+                    write_dot_response(&mut tls_stream, &response).await?;
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn write_dot_response<S>(stream: &mut S, payload: &[u8]) -> Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
+    if payload.len() >= u16::MAX as usize {
+        anyhow::bail!("DNS message exceeds DoT frame size limit");
+    }
+    stream
+        .write_u16(payload.len() as u16)
+        .await
+        .context("Failed to write DoT frame length")?;
+    stream
+        .write_all(payload)
+        .await
+        .context("Failed to write DoT frame payload")?;
+    stream.flush().await.context("Failed to flush DoT frame")
 }

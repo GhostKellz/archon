@@ -15,13 +15,14 @@
 - refactored `GhostDnsDaemon::run` to extract optional DoT, DoQ, and IPFS runtime setup helpers and reduce inline startup complexity
 - aligned abuse controls more consistently across DoH, DoT, and DoQ with bounded concurrency and timeout handling
 - kept upstream failover, TLS loading, DNSSEC handling, and IPFS gateway behavior working on the migrated transport stack
+- fixed the DoH runtime validation path to exercise the current built binary and confirmed the GhostDNS smoke test against the live TLS listener path
+- reduced GhostDNS startup complexity further without leaving a partial cross-file split behind
 
-### Documentation and workflow
+### Documentation
 
-- added `SECURITY.md` and updated security/release workflow docs to include `cargo audit`
+- added `SECURITY.md` and updated security/release docs to include current verification expectations
 - corrected README sections that overstated current crypto and performance capabilities
 - refreshed the README header/badge block to the new centered presentation style and updated the badge set
-- extended CI checks to run `cargo clippy`, `cargo test`, and `cargo audit`
 - added this root `CHANGELOG.md`
 
 ### Build and packaging
@@ -38,3 +39,5 @@
 - `cargo run --bin archon -- --diagnostics`
 - `cargo run --bin ghostdns -- --help`
 - `cargo run --bin archon-settings -- --help`
+- `tools/scripts/package_smoke_install.sh /tmp/archon-pkgroot`
+- `tools/scripts/ghostdns_runtime_smoke.sh`

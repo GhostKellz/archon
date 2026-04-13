@@ -254,7 +254,7 @@ export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"   # pin to last commit
 - **Native Host**: Rust binary bridging to existing `AiBridge` (Ollama, OpenAI, Claude, Gemini, xAI) and future MCP connectors.
 - **Manifest**: `extensions/ai-sidebar/manifest.json` declares `nativeMessaging`, optional `sidePanel`.
 - Ship the sidebar as a locally bundled (signed) extension and pair the policy template with `ExtensionInstallAllowlist` entries so Archon IDs remain trusted even when Chrome Web Store is unreachable.
-- **Native messaging manifests** now ship under `/etc/chromium/native-messaging-hosts/` and `/etc/opt/chrome/native-messaging-hosts/` as `sh.ghostkellz.archon.host.json`, pointing to `/usr/bin/archon_host --stdio`. Launching with `archon-host --stdio` enables Chromium's stdin/stdout bridge, while `archon-host --listen` continues to expose the local HTTP API for other tooling.
+- **Native messaging manifests** now ship under `/etc/chromium/native-messaging-hosts/` and `/etc/opt/chrome/native-messaging-hosts/` as `sh.ghostkellz.archon.host.json`, pointing to `/usr/bin/archon-host`. Launching with `archon-host --stdio` enables Chromium's stdin/stdout bridge, while `archon-host --listen` continues to expose the local HTTP API for other tooling.
 - **Launcher orchestration**: when `ai_host.enabled` is true, the Rust launcher writes `providers.json` if missing and issues `systemctl --user start archon-host.service` before each Chromium Max launch, surfacing the unit's status in `archon --diagnostics`.
 - The Archon sidebar extension bundle lives at `/usr/share/archon/extensions/archon-sidebar/`. Load it as an unpacked extension during development or serve it via an internal update URL once signed; the managed policy allowlist already includes the deterministic ID derived from the embedded public key.
 - **API Surface**:
@@ -266,19 +266,19 @@ export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"   # pin to last commit
 
 Reuse `src/ai.rs` by exposing a thin `NativeBridge` wrapper; connect via stdin/stdout JSON messages.
 
-## ENS / Unstoppable Resolver Service (`ghostdnsd`)
+## ENS / Unstoppable Resolver Service (`ghostdns`)
 
 - Rust daemon listening on UDP/TCP Do53 and DoH (port 443) with TLS termination via rustls.
 - Cache results in `~/.cache/archon/ens.sqlite` (rusqlite).
 - Lookup flow: DoH request → custom ENS/UD resolution (existing `crypto::resolve_name`) → fallback to upstream DoH (configurable).
-- Provide CLI `ghostdnsd --serve` and integrate with launcher by pointing `DnsOverHttpsTemplates` to the local instance.
+- Provide CLI `ghostdns` runtime config and integrate with launcher by pointing `DnsOverHttpsTemplates` to the local instance.
 - Browser omnibox keyword `ens` calling the Archon CLI via custom protocol ✅.
 - Launcher records an ENS badge per profile, surfaced via `archon --diagnostics` ✅.
 - ENS contenthash auto-pins to the local IPFS node when enabled in config ✅.
 - ENS contenthash gateway responses now point to the bundled GhostDNS IPFS gateway when available ✅.
 
 When GhostDNS is running with `ipfs_gateway_listen` set, ENS TXT answers now surface both the canonical `contenthash` and a `contenthash.gateway` pointing at the local proxy (for example, `http://127.0.0.1:8080/ipfs/<cid>`). Regenerate the managed config with `archon --write-ghostdns-config --force` after changing listener ports so the resolver bundle inherits the trimmed values. The launcher profiles in `docs/examples/launcher/` intentionally omit `crypto.resolvers.ipfs_gateway`, allowing the daemon to route through the local bridge by default.
-- Harden both `ghostdnsd` and `archon-host` as systemd user services: `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=yes`, drop all capabilities, restrict address families to `AF_INET`, `AF_INET6`, `AF_UNIX`, and enable `PrivateTmp` / `PrivateNetwork` as appropriate. Pin executable paths plus SHA256 hashes in Native Messaging manifests and validate message payloads against a JSON schema before invoking provider logic.
+- Harden both `ghostdns` and `archon-host` as systemd user services: `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=yes`, drop all capabilities, restrict address families to `AF_INET`, `AF_INET6`, `AF_UNIX`, and enable `PrivateTmp` / `PrivateNetwork` as appropriate. Pin executable paths plus SHA256 hashes in native messaging manifests and validate message payloads against a JSON schema before invoking provider logic.
 
 ## Performance & Benchmark Harness
 
@@ -328,7 +328,7 @@ Emit HTML reports to `~/Archon/benchmarks/latest.html`, keep historical runs for
 
 2. **Phase 1 – Enhanced Integrations**
    - AI native messaging host + sidebar MVP.
-   - `ghostdnsd` daemon + DoH defaults with systemd sandboxing.
+   - `ghostdns` daemon + DoH defaults with systemd sandboxing.
    - Benchmark harness, KPI thresholds, and CI jobs spanning GNOME/KDE/Sway/Hyprland on AMD/NVIDIA.
 
 3. **Phase 2 – Optional Fork**
@@ -345,7 +345,7 @@ Emit HTML reports to `~/Archon/benchmarks/latest.html`, keep historical runs for
 
 ### Workstream 2 – Service hardening
 
-- Lock down `ghostdnsd` and `archon-host` user units with the documented sandbox profile (`ProtectSystem`, capability drops, address-family filters).
+- Lock down `ghostdns` and `archon-host` user units with the documented sandbox profile (`ProtectSystem`, capability drops, address-family filters).
 - Validate native messaging manifests with pinned paths/checksums and payload schema enforcement.
 - Publish a succinct security note explaining privileges, crash-report stance, and override levers for power users.
 
@@ -383,7 +383,7 @@ Tackle Workstreams 1 and 2 first to lock in runtime stability, follow with Works
 2. Commit `policy/chromium_max_policies.json` and installer logic in packaging scripts.
 3. Scaffold `packaging/aur/chromium-max-bin/PKGBUILD` with launcher/policy assets and reproducible-build metadata.
 4. Build native messaging host crate reusing `AiBridge` (place under `crates/archon-host/`) and bundle the signed sidebar extension + allowlist.
-5. Prototype `ghostdnsd` (reuse `crypto` module), apply systemd hardening, and set DoH template to localhost.
+5. Prototype `ghostdns` (reuse `crypto` module), apply systemd hardening, and set DoH template to localhost.
 6. Stand up `crates/archon-bench` with KPI thresholds + CI guardrails.
 7. Document developer setup and troubleshooting in `docs/chromium_max.md` (this file) and link from `README.md`.
 

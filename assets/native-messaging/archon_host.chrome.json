@@ -1,7 +1,7 @@
 {
   "name": "sh.ghostkellz.archon.host",
   "description": "Archon AI native messaging host (Chrome)",
-  "path": "/usr/bin/archon_host",
+  "path": "/usr/bin/archon-host",
   "type": "stdio",
   "allowed_origins": [
     "chrome-extension://ldcpmobkmncbffgkmjmnhlbnppkhmpii/"

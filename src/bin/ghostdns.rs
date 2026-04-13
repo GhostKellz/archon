@@ -7,6 +7,7 @@ use archon::ghostdns::GhostDns;
 use archon::ghostdns::daemon::GhostDnsDaemon;
 use archon::telemetry::ServiceTelemetry;
 use clap::{ArgAction, Parser};
+use tokio_rustls::rustls::crypto::aws_lc_rs;
 use tracing::{info, warn};
 
 #[derive(Parser, Debug)]
@@ -27,6 +28,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let _ = aws_lc_rs::default_provider().install_default();
     let args = Args::parse();
     let launcher_config = resolve_launcher_config(args.config.as_ref())?;
     let mut settings = LaunchSettings::load_or_default(&launcher_config)?;

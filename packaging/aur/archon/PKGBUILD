@@ -33,7 +33,7 @@ prepare() {
 build() {
     cd "${srcdir}/archon-${pkgver}"
     export CARGO_TARGET_DIR="${srcdir}/target"
-    cargo build --release --bin archon --bin archon_host --bin ghostdns
+    cargo build --release --bin archon --bin archon-host --bin ghostdns --bin archon-settings
 
     local build_args=(
         --source "${PWD}/chromium/src"
@@ -61,8 +61,9 @@ package() {
     cd "${srcdir}/archon-${pkgver}"
 
     install -Dm755 "${srcdir}/target/release/archon" "${pkgdir}/usr/bin/archon"
-    install -Dm755 "${srcdir}/target/release/archon_host" "${pkgdir}/usr/bin/archon_host"
+    install -Dm755 "${srcdir}/target/release/archon-host" "${pkgdir}/usr/bin/archon-host"
     install -Dm755 "${srcdir}/target/release/ghostdns" "${pkgdir}/usr/bin/ghostdns"
+    install -Dm755 "${srcdir}/target/release/archon-settings" "${pkgdir}/usr/bin/archon-settings"
 
     install -Dm644 "policy/chromium_max_policies.json" \
         "${pkgdir}/usr/share/archon/policy/chromium_max_policies.json"
@@ -97,6 +98,8 @@ package() {
     install -d "${pkgdir}/usr/share/archon/tools"
     install -Dm755 "tools/scripts/enable_archon_services.sh" \
         "${pkgdir}/usr/share/archon/tools/enable_archon_services.sh"
+    install -Dm755 "tools/build/scripts/deploy_ghostdns.sh" \
+        "${pkgdir}/usr/share/archon/tools/build/scripts/deploy_ghostdns.sh"
 
     install -d "${pkgdir}/usr/share/archon/themes"
     cp -r --no-preserve=ownership "assets/themes"/* "${pkgdir}/usr/share/archon/themes/"

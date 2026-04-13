@@ -6,7 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/archon_host --listen 127.0.0.1:8805
+ExecStart=/usr/bin/archon-host --listen 127.0.0.1:8805
 Restart=on-failure
 RestartSec=2
 Environment=RUST_LOG=info

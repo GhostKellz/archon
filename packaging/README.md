@@ -6,8 +6,8 @@ Archon ships multiple distribution formats. This document summarizes what each p
 
 | Package | Description | Key Contents |
 | --- | --- | --- |
-| `archon` | Full source build (makepkg) | Rust binaries (`archon`, `archon_host`, `ghostdns`), Chromium Max artifacts, theme pack, sidebar extension (directory + zip), helper scripts, policies, native messaging manifests, systemd user units. |
-| `archon-bin` | Wrapper around system Chromium | Rust binaries (`archon`, `archon_host`), theme pack, sidebar extension (directory + zip), helper scripts, policies, native messaging manifests, systemd user units, build tooling scripts. |
+| `archon` | Full source build (makepkg) | Rust binaries (`archon`, `archon-host`, `ghostdns`, `archon-settings`), Chromium Max artifacts, theme pack, sidebar extension (directory + zip), helper scripts, policies, native messaging manifests, systemd user units. |
+| `archon-bin` | Wrapper around system Chromium | Rust binaries (`archon`, `archon-host`, `ghostdns`, `archon-settings`), theme pack, sidebar extension (directory + zip), helper scripts, policies, native messaging manifests, systemd user units, build tooling scripts. |
 
 Both packages install the following shared assets under `/usr/share/archon/`:
 
@@ -16,6 +16,7 @@ Both packages install the following shared assets under `/usr/share/archon/`:
 - `extensions/archon-sidebar/` unpacked extension bundle.
 - `extensions/archon-sidebar.zip` deterministic archive of the sidebar (crafted from `extensions/archon-sidebar/manifest.json`'s embedded key).
 - `tools/enable_archon_services.sh` helper for toggling systemd services.
+- `tools/build/scripts/deploy_ghostdns.sh` helper for restaging GhostDNS and optional host units on packaged systems.
 
 ## Helper Scripts
 

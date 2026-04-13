@@ -66,7 +66,7 @@ The Chromium sidebar now pulls its provider dropdown from the running host, so a
 Run `cargo run -- --diagnostics` to verify endpoints, API keys, the active default provider, and a live metrics snapshot (request counts, latency, last prompt/error) for each connector.
 
 
-- `archon_host` now supports both HTTP (`archon-host --listen 127.0.0.1:8805`) and Chromium native messaging (`archon-host --stdio`). The AUR package installs native messaging manifests under `/etc/chromium/native-messaging-hosts/` and `/etc/opt/chrome/native-messaging-hosts/` so the browser can spawn the host automatically.
+- `archon-host` now supports both HTTP (`archon-host --listen 127.0.0.1:8805`) and Chromium native messaging (`archon-host --stdio`). The AUR package installs native messaging manifests under `/etc/chromium/native-messaging-hosts/` and `/etc/opt/chrome/native-messaging-hosts/` so the browser can spawn the host automatically.
 - The `/chat/stream` endpoint delivers Server-Sent Events (`status`, `delta`, `complete`, `error`) so the sidebar and CLI can render incremental responses while the blocking `/chat` API keeps recording transcripts.
 - A starter sidebar extension ships at `/usr/share/archon/extensions/archon-sidebar/` with a reproducible `archon-sidebar.zip` bundle alongside it. Load either artifact as an unpacked extension during development, or sign and distribute it with the embedded public key to preserve the deterministic ID (`ldcpmobkmncbffgkmjmnhlbnppkhmpii`).
 - Chromium Max build tooling is packaged under `/usr/share/archon/tools/build/`. Invoke `/usr/share/archon/tools/build/chromium_max_build.sh` directly or copy it into a writable workspace; the matching GN args template lives at `/usr/share/archon/tools/build/args/chromium_max.gn`.

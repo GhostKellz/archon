@@ -26,6 +26,7 @@ reqwest = { version = "0.12", features = ["blocking", "json", "stream"] }
 tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "signal", "net", "io-util", "io-std"] }
 hyper = { version = "1.4", features = ["http1", "http2", "server"] }
 axum = { version = "0.7", features = ["json"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 base64 = "0.22"
 futures-util = "0.3"
 hickory-proto = { version = "0.25.2", features = ["serde"] }

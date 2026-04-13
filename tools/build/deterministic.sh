@@ -85,7 +85,7 @@ package_artifacts() {
     mkdir -p "$staging_dir"
 
     # Copy binaries
-    local binaries=("archon" "archon_host" "ghostdns")
+    local binaries=("archon" "archon-host" "ghostdns" "archon-settings")
     for bin in "${binaries[@]}"; do
         if [ -f "target/release/$bin" ]; then
             cp "target/release/$bin" "$staging_dir/"
