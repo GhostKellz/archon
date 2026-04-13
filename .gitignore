@@ -18,3 +18,4 @@ dev/configs/
 #/target
 
 tasks/
+/$tmpdir/
