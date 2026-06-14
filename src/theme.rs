@@ -85,7 +85,7 @@ pub struct ThemeInstallOutcome {
 pub struct ThemeRegistry;
 
 impl ThemeRegistry {
-    pub const DEFAULT_THEME: &'static str = "tokyonight";
+    pub const DEFAULT_THEME: &'static str = "tokyonight-storm";
 
     pub fn normalize(name: &str) -> String {
         name.trim().to_ascii_lowercase().replace([' ', '_'], "-")
@@ -230,9 +230,13 @@ mod tests {
     }
 
     #[test]
-    fn default_palette_is_tokyonight() {
+    fn default_palette_is_tokyonight_storm() {
+        assert_eq!(ThemeRegistry::DEFAULT_THEME, "tokyonight-storm");
         let palette = ThemeRegistry::default_palette();
-        assert_eq!(palette.name, ThemeRegistry::load("tokyonight", None).unwrap().name);
+        assert_eq!(
+            palette.name,
+            ThemeRegistry::load("tokyonight-storm", None).unwrap().name
+        );
     }
 
     #[test]

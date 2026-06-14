@@ -1,6 +1,6 @@
 # Archon Documentation
 
-Complete documentation for **Archon** — a sovereign browser runtime for Linux: a Rust-first launcher, GhostDNS sidecar, and Wayland-aware orchestration for Chromium and Firefox engines.
+Complete documentation for **Archon** — a sovereign browser runtime for Linux: a Rust-first launcher, GhostDNS sidecar, and Wayland-aware orchestration for the hardened Chromium Max engine.
 
 ## Quick Start
 
@@ -63,6 +63,16 @@ Drive Archon from external agents and tools.
 | Document | Description |
 | --- | --- |
 | [MCP Server](integrations/mcp-server.md) | Run `archon --mcp` so Claude Code, Codex, Gemini, and Jarvis can drive the browser over JSON-RPC 2.0. |
+| [Conduit](integrations/conduit.md) | Run `archon --conduit` to inject local per-site userscripts/userstyles into your own session over CDP. |
+| [Sidebar Tools](integrations/sidebar-tools.md) | Web-dev utilities in the Archon sidebar Tools tab, including the native EyeDropper color picker. |
+
+### Automation
+
+Drive multi-step browser flows from recipes.
+
+| Document | Description |
+| --- | --- |
+| [Recipes](automation/recipes.md) | Author hybrid recipes (explicit actions + agent goals) and run them with `archon --automate`. |
 
 ### Operations
 

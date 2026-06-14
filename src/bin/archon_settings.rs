@@ -4,7 +4,7 @@ use anyhow::Result;
 use archon::{
     Launcher,
     config::{
-        CryptoResolverSettings, EngineKind, LaunchMode, LaunchSettings, TelemetrySettings,
+        CryptoResolverSettings, LaunchMode, LaunchSettings, TelemetrySettings,
         default_config_path,
     },
 };
@@ -47,7 +47,6 @@ fn run() -> SettingsResult<()> {
 
     let theme = ColorfulTheme::default();
 
-    edit_default_engine(&theme, &mut settings);
     edit_default_mode(&theme, &mut settings);
     edit_ghostdns_enabled(&theme, &mut settings);
     edit_ipfs_gateway(&theme, &mut settings.crypto.resolvers);
@@ -106,22 +105,6 @@ fn resolve_config_path(explicit: Option<&PathBuf>) -> SettingsResult<PathBuf> {
     match explicit {
         Some(path) => Ok(path.clone()),
         None => default_config_path(),
-    }
-}
-
-fn edit_default_engine(theme: &ColorfulTheme, settings: &mut LaunchSettings) {
-    let engines = [EngineKind::Lite, EngineKind::Edge];
-    let default_index = engines
-        .iter()
-        .position(|engine| engine == &settings.default_engine)
-        .unwrap_or(0);
-    if let Ok(selection) = Select::with_theme(theme)
-        .with_prompt("Default engine")
-        .items(&["archon-lite", "archon-edge"])
-        .default(default_index)
-        .interact()
-    {
-        settings.default_engine = engines[selection];
     }
 }
 

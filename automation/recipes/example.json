@@ -1,0 +1,19 @@
+{
+  "name": "Example hybrid recipe",
+  "description": "Explicit actions plus a natural-language goal step",
+  "start_url": "https://example.com",
+  "steps": [
+    {
+      "action": "navigate",
+      "url": "https://example.com"
+    },
+    {
+      "action": "extract",
+      "selector": "h1"
+    },
+    {
+      "goal": "Find the 'More information' link and report where it points",
+      "max_steps": 4
+    }
+  ]
+}

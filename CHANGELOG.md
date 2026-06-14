@@ -2,14 +2,14 @@
 
 ## 2026-06-14
 
-### Page awareness (Phase 1)
+### Page awareness
 
 - captured page text, selection, title, and URL on demand from the sidebar via `activeTab` + `chrome.scripting` (`capturePageContext`), with readability extraction and bounded payloads; no always-on injection
 - wired page context end-to-end (`ChatRequest.page_context` → `AiChatPrompt.page_context`) into a bounded system-prompt block for all providers
 - added an "Include current page" chat toggle and a "Summarize page" action in the sidebar
 - added host message-handler and context-extraction tests
 
-### Agentic control (Phase 2)
+### Agentic control
 
 - added `browser.rs`: an object-safe `BrowserDriver` trait and blocking `CdpBrowser` (CDP via `headless_chrome`) implementing navigate / read DOM (structured `PageObservation`) / click / type / scroll / screenshot / extract
 - exposed typed `WebAction`/`ActionType` tools over the driver through `execute_action_with`, running validation (rate limit, domain allow/block, sensitive/password guards) before dispatch
@@ -17,7 +17,7 @@
 - added the `archon --agent "<goal>"` CLI surface with transcript logging (`AgentOutcome` persisted per run); safe by default (preview unless `--agent-execute` + `automation.enabled`)
 - added CDP fixture and stub-LLM agent tests
 
-### Comet-class UX (Phase 3)
+### Comet-class UX
 
 - added true token streaming in the sidebar (`/chat/stream`, `/arc/ask/stream`) with native-messaging fallback
 - enabled attaching the agent to the user's visible hardened browser (`automation.remote_debug_port`, `CdpBrowser::connect`/`devtools_ws_url`, `--agent-attach`)
@@ -25,13 +25,49 @@
 - added page-region citations (anchored capture + `[[aN]]` chips that scroll and highlight)
 - added conversational follow-up polish (follow-up chips prefill the composer; streamed turns persist to the same conversation)
 
-### MCP server (Phase 4)
+### MCP server
 
 - added `archon --mcp`: a standard MCP server over stdio (newline-delimited JSON-RPC 2.0, protocol `2025-06-18`) in `src/mcp_server.rs`, so Claude Code, Codex, Gemini CLI, and Jarvis can drive the hardened browser through one protocol
 - exposed six tools — `read_page`, `screenshot`, `navigate`, `click`, `type`, `run_task` — over a blocking stdio loop that keeps stdout for protocol frames and logs to stderr
 - implemented a safe-by-default permission model: read-only tools always allowed, mutating tools require `automation.enabled`, and unattended High/Critical agent steps require the new `automation.allow_unattended_high_risk` (default `false`)
 - used a lazy driver factory so `initialize`/`tools/list` work with no browser, added a 4 MiB frame cap, and added 13 browser-free unit tests
 - added `docs/integrations/mcp-server.md` with copy-paste client configs
+
+### Unified branding
+
+- unified all app/launcher/desktop icons and the README logo on a single source, `assets/archon.png`, regenerated via the new reproducible `assets/scripts/generate-icons.sh` (ImageMagick center-crop/pad → 16–512 hicolor PNGs + GitHub logo)
+- removed the prototype icon packs (`assets/alt.desktop.icons/`, scratch PNGs in `assets/icons/`, `swap-icon.sh`, `ICON_VARIANTS.md`) and stripped the alt-icon variant loops from both PKGBUILDs
+
+### Tokyo Night Storm default
+
+- made **Tokyo Night Storm** the shipped default theme (`ThemeRegistry::DEFAULT_THEME`, `UiSettings` theme/accent defaults `tokyonight-storm`/`#7aa2f7`); Night and Moon remain selectable variants
+- added the bundled `extensions/themes/tokyonight-storm/` Chromium theme (manifest v3) and defaulted the sidebar theme to Storm
+- refreshed `docs/themes/` (catalogue + palette blueprint) to canonical Storm hexes
+
+### KDE-native window decorations
+
+- added `UiSettings.use_native_decorations` (default `true`) that omits Chromium's `WaylandWindowDecorations` CSD feature so KDE/KWin (Aurorae) draws the native min/max/close controls; set `false` to restore client-side decorations
+- threaded the flag through `UiHealthReport` and gated the engine feature push, with unit tests covering both decoration modes
+
+### Web-dev color picker
+
+- added a native EyeDropper-based color picker to the sidebar Tools tab: sample any on-screen pixel, copy HEX/RGB/HSL, and reselect from a locally stored recent-swatch history
+- documented it in `docs/integrations/sidebar-tools.md` (linked from `docs/README.md`); no new extension permissions required
+
+### Conduit per-site injection
+
+- added `src/conduit.rs`: a Rust-native userscript/userstyle injector (Tampermonkey/Stylus-class) that loads local, user-authored `.js`/`.css` from a Conduit directory and injects them into the user's own session over CDP
+- mirrored Witchcraft's matching (`candidate_basenames`): `_global` first, then each domain level TLD→full and cumulative path-segment prefixes; ports ignored; IP-literal and `file://` hosts skip the domain walk; most-specific file applied last
+- `load_bundle` reads general→specific with a canonicalize+in-tree path-traversal guard and a per-file size bound; JS runs at document-start (`Page.addScriptToEvaluateOnNewDocument`), CSS via a `<style data-conduit>` document-start shim guarded by a `MutationObserver`
+- added `ConduitService` (attaches to the existing `automation.remote_debug_port`, polls tabs, re-injects on navigation) and the `archon --conduit` CLI surface with Ctrl-C cancellation; off by default and requires `conduit.enabled` + a non-zero debug port
+- added `ConduitSettings` to `LaunchSettings` (seeds `<config>/conduit/_global.css` on first run), 13 browser-free unit tests, and `docs/integrations/conduit.md`
+
+### Automation recipes + transcript export
+
+- added `src/recipe.rs`: hybrid recipes where each ordered step is either an explicit deterministic action (navigate / click / type / scroll / extract / screenshot / wait) or a natural-language goal handed to the existing `BrowserAgent`; an untagged step enum disambiguates action vs goal by required field
+- added the `archon --automate <RECIPE>` CLI surface reusing the agent flags (`--agent-execute`, `-yes`, `--agent-headful`, `--agent-attach`, `--agent-provider`, `--agent-max-steps`); recipes run through the same `AutomationOrchestrator` guardrails (domain allow/block, rate limit, sensitive/password guards, risk-gated confirmation) and resolve bare names to `automation/recipes/<name>.json`
+- added Markdown + JSON transcript export: `agent::render_markdown`/`persist_outcome` now write both `agent-{id}.json` and `agent-{id}.md` for every agent and recipe run, plus a new `--agent-export <DIR>` flag (applies to `--agent` and `--automate`)
+- added `automation/recipes/example.json`, `docs/automation/recipes.md`, recipe + export unit tests (no browser required)
 
 ### Verification
 

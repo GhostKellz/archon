@@ -30,7 +30,9 @@ Responsibilities:
 1. Detect display stack: Wayland vs X11, compositor identity (KDE, GNOME, sway, Hyprland).
 2. Compose GPU/Wayland-friendly flags:
    ```text
-   --enable-features=UseOzonePlatform,WaylandWindowDecorations,VaapiVideoDecodeLinuxGL,
+   # WaylandWindowDecorations is omitted by default (ui.use_native_decorations=true)
+   # so KDE/KWin draws native decorations; add it back when use_native_decorations=false.
+   --enable-features=UseOzonePlatform,VaapiVideoDecodeLinuxGL,
                      CanvasOopRasterization,UseSkiaRenderer,AcceleratedVideoDecode,RawDraw,
                      Vulkan,UseMultiPlaneFormatForHardwareVideo,WebRTCPipeWireCapturer,
                      UseHardwareMediaKeyHandling
@@ -313,11 +315,11 @@ Emit HTML reports to `~/Archon/benchmarks/latest.html`, keep historical runs for
 ## Theming & UX
 
 - Respect `xdg-desktop-portal` color schemes for KDE/GNOME accent sync.
-- Wayland client-side decorations via `WaylandWindowDecorations` flag.
+- Native server-side window decorations by default (`ui.use_native_decorations = true`), so KDE/KWin (Aurorae) draws the min/max/close controls without Chromium hijacking them. Set it to `false` to opt back into Chromium client-side decorations via the `WaylandWindowDecorations` feature.
 - Optionally ship styles for tabs-as-tiles (via extension) and provide `Mint`, `Teal`, `Ghost` accent presets.
-- Default desktop icons live under `assets/desktop.icons` and install into `usr/share/icons/hicolor` with the Archon wrapper package. Alternate variants (`test-alt`, `proto`, `nobak`) ship alongside the binary at `usr/share/archon/icons/alt/` so power users can swap branding without rebuilding.
+- Desktop icons live under `assets/desktop.icons` and install into `usr/share/icons/hicolor` with the Archon wrapper package. They are generated from the single source logo `assets/archon.png` via `assets/scripts/generate-icons.sh`.
 - Chromium theme bundles are installed to `/usr/share/archon/themes/chromium/`; load them via `chrome://extensions` → **Load unpacked**, or point Archon UI selectors at the same directory. The packaged README in that directory summarizes palettes and screenshot links.
-- The repository includes `assets/swap-icon.sh` to switch between icon sets during development or post-install. Invoke `./assets/swap-icon.sh test-alt` (or `proto`, `nobak`) to seed the primary `desktop.icons` tree, then refresh the system cache (`sudo gtk-update-icon-cache -f /usr/share/icons/hicolor/`) if you want the change to appear globally.
+- To rebrand, replace `assets/archon.png` and re-run `assets/scripts/generate-icons.sh`, then refresh the system cache (`sudo gtk-update-icon-cache -f /usr/share/icons/hicolor/`) if you want the change to appear globally.
 
 ## Phase Plan
 

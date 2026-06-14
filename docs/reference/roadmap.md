@@ -96,7 +96,7 @@ Goal: Deliver a reproducible `chromium-max` source package and polish installer 
 
 - [ ] Archon Settings Hub (Rust + egui/GTK) for managing policies, AI providers, DNS.
 - [ ] KDE/GNOME accent sync, custom accent editor, high-contrast theme.
-- [ ] KDE native theme stays (like close, minimize, maximize I want it to retain the kde theme without hackery but the browser itself can still have a regular chrome theme that doesnt hijack the window decorations from kde)
+- [x] KDE native theme stays (close, minimize, maximize retain the KDE/KWin decorations without hackery, while the browser keeps its own chrome theme) — `ui.use_native_decorations` (default true) omits Chromium's `WaylandWindowDecorations` CSD feature.
 - [ ] Tab grid / tiling mode for ultrawide monitors.
 - [ ] Keyboard-first navigation & screen reader QA.
 

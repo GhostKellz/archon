@@ -176,7 +176,7 @@ mod tests {
     #[test]
     fn launch_event_sets_pid() {
         let spec = CommandSpec::new(
-            PathBuf::from("/usr/bin/firefox"),
+            PathBuf::from("/usr/bin/chromium"),
             vec!["--profile".into()],
             vec![],
         );
@@ -185,7 +185,7 @@ mod tests {
             "default",
             Path::new("/tmp/profile"),
             LaunchMode::Privacy,
-            EngineKind::Lite,
+            EngineKind::Edge,
             &spec,
             true,
             Some(1234),
@@ -222,7 +222,7 @@ mod tests {
         let temp = tempdir().unwrap();
         let log_path = temp.path().join("events.jsonl");
         let layer = SyncLayer::new(log_path.clone());
-        let spec = CommandSpec::new(PathBuf::from("/usr/bin/firefox"), vec![], vec![]);
+        let spec = CommandSpec::new(PathBuf::from("/usr/bin/chromium"), vec![], vec![]);
 
         for idx in 0..5 {
             let profile_name = format!("profile-{idx}");
@@ -232,7 +232,7 @@ mod tests {
                 &profile_name,
                 &profile_path,
                 LaunchMode::Privacy,
-                EngineKind::Lite,
+                EngineKind::Edge,
                 &spec,
                 true,
                 Some(1000 + idx as u32),

@@ -49,12 +49,10 @@ profile archon /usr/bin/archon flags=(enforce) {
   /usr/share/archon/themes/ r,
   /usr/share/archon/themes/** r,
 
-  # Chromium/Firefox access (for browser control)
+  # Chromium access (for browser control)
   /usr/bin/chromium* ix,
   /usr/bin/ungoogled-chromium* ix,
-  /usr/bin/firefox* ix,
   /usr/lib/chromium/** mr,
-  /usr/lib/firefox/** mr,
 
   # GPU/graphics access
   /dev/dri/ r,

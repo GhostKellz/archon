@@ -19,7 +19,7 @@ use tracing::info;
 #[derive(Parser, Debug)]
 #[command(name = "archon", author = "GhostKellz", version, about = "Hybrid Archon browser launcher", long_about = None)]
 pub struct Cli {
-    /// Engine to launch (archon-lite or archon-edge).
+    /// Engine to launch (archon-edge, the Chromium Max build).
     #[arg(long, value_enum)]
     pub engine: Option<EngineKind>,
 
@@ -120,10 +120,26 @@ pub struct Cli {
     #[arg(long, value_name = "NAME")]
     pub agent_provider: Option<String>,
 
+    /// Run a hybrid automation RECIPE (explicit actions + agent goals) and exit.
+    /// Accepts a path or a bare name resolved under automation/recipes/<NAME>.json.
+    /// Honors --agent-execute/-yes/-headful/-attach/-provider/-max-steps.
+    #[arg(long, value_name = "RECIPE")]
+    pub automate: Option<String>,
+
+    /// Also export the agent/recipe run transcript (JSON + Markdown) to DIR.
+    #[arg(long, value_name = "DIR")]
+    pub agent_export: Option<PathBuf>,
+
     /// Run as an MCP server over stdio (JSON-RPC 2.0) so external MCP clients
     /// (Claude Code, Codex, Gemini, Jarvis, …) can drive the browser.
     #[arg(long, action = ArgAction::SetTrue)]
     pub mcp: bool,
+
+    /// Run the Conduit per-site JS/CSS injector against the running Archon
+    /// browser (requires automation.remote_debug_port != 0). Attaches over CDP
+    /// and injects local userscripts/userstyles until interrupted.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub conduit: bool,
 
     /// List N8N workflows from the configured instance and exit.
     #[arg(long, action = ArgAction::SetTrue)]
@@ -989,6 +1005,123 @@ fn run_agent(launcher: &Launcher, cli: &Cli, goal: &str) -> Result<()> {
         &cancel,
     )?;
 
+    if let Some(dir) = &cli.agent_export {
+        crate::agent::persist_outcome(dir, &outcome);
+        println!("Exported transcript (JSON + Markdown) to {}", dir.display());
+    }
+
+    println!("\nSteps:");
+    if outcome.steps.is_empty() {
+        println!("  (none)");
+    }
+    for step in &outcome.steps {
+        let status = if step.result.success { "ok" } else { "failed" };
+        let detail = step
+            .action
+            .selector
+            .as_deref()
+            .or(step.action.value.as_deref())
+            .unwrap_or("");
+        println!(
+            "  {}. {:?} {} [{status}]",
+            step.index, step.action.action_type, detail
+        );
+        if let Some(data) = &step.result.data {
+            println!("      {data}");
+        }
+        if let Some(err) = &step.result.error {
+            println!("      error: {err}");
+        }
+    }
+
+    println!(
+        "\n{} {}",
+        if outcome.completed {
+            "Completed:"
+        } else {
+            "Ended:"
+        },
+        outcome.summary
+    );
+
+    Ok(())
+}
+
+fn run_automate(launcher: &Launcher, cli: &Cli, recipe_path: &str) -> Result<()> {
+    let settings = launcher.settings();
+
+    if cli.agent_execute && !settings.automation.enabled {
+        bail!(
+            "--agent-execute requires automation to be enabled in config \
+             (set automation.enabled = true). Omit --agent-execute for a dry-run preview."
+        );
+    }
+
+    let recipe = crate::recipe::load_recipe(recipe_path)?;
+
+    let transcripts = launcher.ai().transcript_store();
+    let transcript_root = transcripts.root().to_path_buf();
+    let agent_transcript_dir = transcript_root.join("agents");
+    let artifacts_dir = transcript_root.join("agent-artifacts");
+
+    let ai = std::sync::Arc::new(AiBridge::from_settings(&settings.ai, transcripts));
+    let orchestrator = std::sync::Arc::new(AutomationOrchestrator::from_settings(
+        settings.automation.clone(),
+        ai,
+    ));
+
+    let mode = if cli.agent_execute {
+        "execute"
+    } else {
+        "preview (dry-run)"
+    };
+    println!("Recipe: {}", recipe.goal_label());
+    println!("Mode: {mode} | max steps: {}", cli.agent_max_steps);
+    if let Some(url) = &recipe.start_url {
+        println!("Start URL: {url}");
+    }
+
+    let driver = if cli.agent_attach {
+        let port = settings.automation.remote_debug_port;
+        let user_data_dir = settings
+            .resolve_profile_root()
+            .ok()
+            .map(|root| root.join(&cli.profile));
+        let ws_url = CdpBrowser::devtools_ws_url(port, user_data_dir.as_deref()).with_context(|| {
+            format!(
+                "could not find a debuggable Archon browser on port {port}. \
+                 Launch Archon first (e.g. `archon --engine edge --execute`) so it \
+                 exposes the CDP port, then retry with --agent-attach."
+            )
+        })?;
+        println!("Attaching to running browser at {ws_url}");
+        CdpBrowser::connect(&ws_url, artifacts_dir)
+            .context("failed to attach to the running Archon browser")?
+    } else {
+        CdpBrowser::launch(cli.agent_headful, artifacts_dir)
+            .context("failed to launch the agent browser (is Chromium installed?)")?
+    };
+
+    let http = BlockingAiHttp::default();
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let outcome = crate::recipe::run_recipe(
+        &recipe,
+        orchestrator,
+        cli.agent_max_steps,
+        cli.agent_execute,
+        cli.agent_yes,
+        &driver,
+        cli.agent_provider.as_deref(),
+        &http,
+        &cancel,
+    )?;
+
+    crate::agent::persist_outcome(&agent_transcript_dir, &outcome);
+    if let Some(dir) = &cli.agent_export {
+        crate::agent::persist_outcome(dir, &outcome);
+        println!("Exported transcript (JSON + Markdown) to {}", dir.display());
+    }
+
     println!("\nSteps:");
     if outcome.steps.is_empty() {
         println!("  (none)");
@@ -1084,6 +1217,62 @@ fn run_mcp(launcher: &Launcher, cli: &Cli) -> Result<()> {
     serve_stdin(toolbox)
 }
 
+fn run_conduit(launcher: &Launcher, cli: &Cli) -> Result<()> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let settings = launcher.settings();
+    let conduit = &settings.conduit;
+
+    if !conduit.enabled {
+        bail!(
+            "Conduit is disabled. Set `conduit.enabled = true` in your Archon config to use --conduit."
+        );
+    }
+
+    let port = settings.automation.remote_debug_port;
+    if port == 0 {
+        bail!(
+            "Conduit requires automation.remote_debug_port != 0 so it can attach over CDP; \
+             set a port (default 9222) and launch Archon with it."
+        );
+    }
+
+    let dir = conduit.resolve_dir()?;
+    crate::conduit::seed_example(&dir)?;
+
+    let user_data_dir = settings
+        .resolve_profile_root()
+        .ok()
+        .map(|root| root.join(&cli.profile));
+    let ws_url = CdpBrowser::devtools_ws_url(port, user_data_dir.as_deref()).with_context(|| {
+        format!(
+            "could not find a debuggable Archon browser on port {port}. Launch Archon first \
+             (e.g. `archon --engine edge --execute`) so it exposes the CDP port, then run --conduit."
+        )
+    })?;
+
+    let service = crate::conduit::ConduitService::connect(&ws_url, conduit, dir.clone())?;
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let signal_cancel = cancel.clone();
+    std::thread::spawn(move || {
+        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            let _ = rt.block_on(tokio::signal::ctrl_c());
+        }
+        signal_cancel.store(true, Ordering::Relaxed);
+    });
+
+    println!(
+        "Conduit attached on port {port}; injecting from {}. Press Ctrl-C to stop.",
+        dir.display()
+    );
+    service.run(&cancel)
+}
+
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
     let config_path = match cli.config.clone() {
@@ -1100,6 +1289,11 @@ pub fn run() -> Result<()> {
 
     if cli.mcp {
         run_mcp(&launcher, &cli)?;
+        return Ok(());
+    }
+
+    if cli.conduit {
+        run_conduit(&launcher, &cli)?;
         return Ok(());
     }
 
@@ -1287,6 +1481,14 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(recipe) = cli.automate.clone() {
+        if recipe.trim().is_empty() {
+            bail!("--automate requires a recipe path or name");
+        }
+        run_automate(&launcher, &cli, &recipe)?;
+        return Ok(());
+    }
+
     if let Some(goal) = cli.agent.clone() {
         if goal.trim().is_empty() {
             bail!("--agent requires a non-empty GOAL");
@@ -1370,9 +1572,6 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
-    let engine = cli
-        .engine
-        .unwrap_or_else(|| launcher.settings().default_engine);
     let unsafe_webgpu = if cli.unsafe_webgpu {
         true
     } else {
@@ -1387,31 +1586,15 @@ pub fn run() -> Result<()> {
     };
     let allow_x11_override: Option<bool> = None;
 
-    let outcome = if engine == EngineKind::Edge {
-        launcher.spawn_chromium_max(
-            cli.profile.clone(),
-            cli.mode,
-            cli.execute,
-            unsafe_webgpu,
-            prefer_wayland_override,
-            allow_x11_override,
-        )?
-    } else {
-        let request = LaunchRequest {
-            engine: Some(engine),
-            profile: cli.profile.clone(),
-            mode: cli.mode,
-            execute: cli.execute,
-            unsafe_webgpu: false,
-            prefer_wayland: prefer_wayland_override,
-            allow_x11_fallback: allow_x11_override,
-            policy_path: None,
-            xdg_config_home: None,
-            open_url: None,
-            remote_debug_port: None,
-        };
-        launcher.run(request)?
-    };
+    // Archon ships a single engine (Chromium Max); always launch it.
+    let outcome = launcher.spawn_chromium_max(
+        cli.profile.clone(),
+        cli.mode,
+        cli.execute,
+        unsafe_webgpu,
+        prefer_wayland_override,
+        allow_x11_override,
+    )?;
     if outcome.executed() {
         info!(
             engine = %outcome.engine,

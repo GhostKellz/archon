@@ -64,92 +64,6 @@ pub trait BrowserEngine: Send + Sync {
     ) -> Result<CommandSpec>;
 }
 
-struct FirefoxEngine {
-    config: EngineSpecificConfig,
-}
-
-impl FirefoxEngine {
-    fn resolve_binary(&self) -> Result<PathBuf> {
-        if let Some(path) = &self.config.binary_path {
-            return Ok(path.clone());
-        }
-        if let Ok(path) = env::var("ARCHON_FIREFOX_BINARY") {
-            return Ok(PathBuf::from(path));
-        }
-        let candidates = ["firefox", "librewolf", "floorp"];
-        for candidate in candidates {
-            if let Ok(path) = which::which(candidate) {
-                return Ok(path);
-            }
-        }
-        bail!(
-            "Firefox-compatible binary not found; set ARCHON_FIREFOX_BINARY or configure engines.lite.binary_path"
-        )
-    }
-}
-
-impl BrowserEngine for FirefoxEngine {
-    fn kind(&self) -> EngineKind {
-        EngineKind::Lite
-    }
-
-    fn label(&self) -> &'static str {
-        "Archon Lite (Firefox)"
-    }
-
-    fn locate_binary(&self) -> Result<PathBuf> {
-        self.resolve_binary()
-    }
-
-    fn build_command(
-        &self,
-        profile: &ProfileRecord,
-        request: &LaunchRequest,
-        ui: &UiHealthReport,
-    ) -> Result<CommandSpec> {
-        let binary = self.locate_binary()?;
-        let profile_path = profile.directory.to_string_lossy().to_string();
-        let mut args = vec!["--profile".into(), profile_path];
-        match request.mode {
-            LaunchMode::Privacy => args.push("--private-window".into()),
-            LaunchMode::Ai => args.push("--proxy-bypass-list=*".into()),
-        }
-        if let Some(url) = &request.open_url {
-            args.push(url.clone());
-        }
-        let mut env_pairs = Vec::new();
-
-        let wayland_env = ui
-            .wayland_display
-            .clone()
-            .or_else(|| env::var("WAYLAND_DISPLAY").ok());
-        if ui.prefer_wayland {
-            if wayland_env.is_some() || ui.wayland_available {
-                env_pairs.push(("MOZ_ENABLE_WAYLAND".into(), "1".into()));
-                env_pairs.push(("MOZ_WEBRENDER".into(), "1".into()));
-                env_pairs.push(("MOZ_WAYLAND_USE_VAAPI".into(), "1".into()));
-            } else if !ui.allow_x11_fallback {
-                bail!(
-                    "Wayland requested but unavailable (set WAYLAND_DISPLAY or enable allow_x11_fallback)"
-                );
-            } else {
-                env_pairs.push(("GDK_BACKEND".into(), "x11".into()));
-            }
-        }
-
-        env_pairs.extend(
-            self.config
-                .env
-                .iter()
-                .map(|pair| (pair.key.clone(), pair.value.clone())),
-        );
-
-        let args = merge_args(args, self.config.extra_args.clone());
-        let env = merge_env(env_pairs);
-        Ok(CommandSpec::new(binary, args, env))
-    }
-}
-
 struct ChromiumEngine {
     config: EngineSpecificConfig,
 }
@@ -245,7 +159,12 @@ impl BrowserEngine for ChromiumEngine {
 
         if use_wayland {
             enable_features.push("UseOzonePlatform".into());
-            enable_features.push("WaylandWindowDecorations".into());
+            // Only opt into Chromium's client-side decorations when the user has
+            // disabled native decorations; otherwise let the compositor (e.g.
+            // KWin/Aurorae on KDE) draw the server-side min/max/close controls.
+            if !ui.use_native_decorations {
+                enable_features.push("WaylandWindowDecorations".into());
+            }
             enable_features.push("WebRTCPipeWireCapturer".into());
         }
 
@@ -420,12 +339,6 @@ impl EngineRegistry {
     pub fn new(settings: &LaunchSettings) -> Self {
         let mut engines: HashMap<EngineKind, Box<dyn BrowserEngine>> = HashMap::new();
         engines.insert(
-            EngineKind::Lite,
-            Box::new(FirefoxEngine {
-                config: settings.engines.lite.clone(),
-            }),
-        );
-        engines.insert(
             EngineKind::Edge,
             Box::new(ChromiumEngine {
                 config: settings.engines.edge.clone(),
@@ -477,6 +390,7 @@ mod tests {
             accent_color: palette.primary_accent().to_string(),
             theme_palette: palette,
             unsafe_webgpu_default: false,
+            use_native_decorations: true,
             wayland_display: None,
             session_type: None,
             wayland_available: false,
@@ -493,22 +407,6 @@ mod tests {
     }
 
     #[test]
-    fn firefox_command_contains_profile() {
-        let engine = FirefoxEngine {
-            config: EngineSpecificConfig {
-                binary_path: Some(PathBuf::from("/usr/bin/firefox")),
-                extra_args: vec![],
-                env: vec![],
-            },
-        };
-        let profile = dummy_profile();
-        let ui = default_ui_report();
-        let request = privacy_request();
-        let command = engine.build_command(&profile, &request, &ui).unwrap();
-        assert!(command.args().contains(&"--profile".to_string()));
-    }
-
-    #[test]
     fn chromium_privacy_mode_adds_flag() {
         let engine = ChromiumEngine {
             config: EngineSpecificConfig {
@@ -522,31 +420,6 @@ mod tests {
         let request = privacy_request();
         let command = engine.build_command(&profile, &request, &ui).unwrap();
         assert!(command.args().iter().any(|arg| arg == "--incognito"));
-    }
-
-    #[test]
-    fn firefox_wayland_env_is_added_when_available() {
-        let engine = FirefoxEngine {
-            config: EngineSpecificConfig {
-                binary_path: Some(PathBuf::from("/usr/bin/firefox")),
-                extra_args: vec![],
-                env: vec![],
-            },
-        };
-        let profile = dummy_profile();
-        let mut ui = default_ui_report();
-        ui.prefer_wayland = true;
-        ui.wayland_display = Some("wayland-1".into());
-        ui.session_type = Some("wayland".into());
-        ui.wayland_available = true;
-        let request = privacy_request();
-        let command = engine.build_command(&profile, &request, &ui).unwrap();
-        assert!(
-            command
-                .env()
-                .iter()
-                .any(|(key, value)| key == "MOZ_ENABLE_WAYLAND" && value == "1")
-        );
     }
 
     #[test]
@@ -571,6 +444,60 @@ mod tests {
                 .args()
                 .iter()
                 .any(|arg| arg == "--ozone-platform=wayland")
+        );
+    }
+
+    #[test]
+    fn chromium_native_decorations_omit_csd_feature() {
+        let engine = ChromiumEngine {
+            config: EngineSpecificConfig {
+                binary_path: Some(PathBuf::from("/usr/bin/chromium")),
+                extra_args: vec![],
+                env: vec![],
+            },
+        };
+        let profile = dummy_profile();
+        let mut ui = default_ui_report();
+        ui.prefer_wayland = true;
+        ui.wayland_display = Some("wayland-1".into());
+        ui.session_type = Some("wayland".into());
+        ui.wayland_available = true;
+        ui.use_native_decorations = true;
+        let request = privacy_request();
+        let command = engine.build_command(&profile, &request, &ui).unwrap();
+        assert!(
+            command
+                .args()
+                .iter()
+                .all(|arg| !arg.contains("WaylandWindowDecorations")),
+            "native decorations should omit the Chromium CSD feature"
+        );
+    }
+
+    #[test]
+    fn chromium_client_decorations_enable_csd_feature() {
+        let engine = ChromiumEngine {
+            config: EngineSpecificConfig {
+                binary_path: Some(PathBuf::from("/usr/bin/chromium")),
+                extra_args: vec![],
+                env: vec![],
+            },
+        };
+        let profile = dummy_profile();
+        let mut ui = default_ui_report();
+        ui.prefer_wayland = true;
+        ui.wayland_display = Some("wayland-1".into());
+        ui.session_type = Some("wayland".into());
+        ui.wayland_available = true;
+        ui.use_native_decorations = false;
+        let request = privacy_request();
+        let command = engine.build_command(&profile, &request, &ui).unwrap();
+        assert!(
+            command
+                .args()
+                .iter()
+                .any(|arg| arg.contains("WaylandWindowDecorations")),
+            "client-side decorations should enable the Chromium CSD feature"
         );
     }
 

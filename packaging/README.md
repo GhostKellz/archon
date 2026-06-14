@@ -11,7 +11,7 @@ Archon ships multiple distribution formats. This document summarizes what each p
 
 Both packages install the following shared assets under `/usr/share/archon/`:
 
-- `assets/desktop.icons/` and `assets/alt.desktop.icons/` for icon management.
+- `assets/desktop.icons/` hicolor app icons (generated from `assets/archon.png` via `assets/scripts/generate-icons.sh`).
 - `themes/` (JSON profiles for the Wayland shell) and `themes/chromium/` (curated Chromium theme directories plus README).
 - `extensions/archon-sidebar/` unpacked extension bundle.
 - `extensions/archon-sidebar.zip` deterministic archive of the sidebar (crafted from `extensions/archon-sidebar/manifest.json`'s embedded key).

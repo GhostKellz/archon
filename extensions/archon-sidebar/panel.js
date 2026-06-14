@@ -2155,6 +2155,7 @@ function handleArcResponse(message) {
 // Theme handling
 const themeSelect = document.getElementById('theme-select');
 const THEME_STORAGE_KEY = 'archon-theme';
+const DEFAULT_THEME = 'tokyonight-storm';
 
 function applyTheme(themeName) {
   document.body.setAttribute('data-theme', themeName);
@@ -2162,12 +2163,10 @@ function applyTheme(themeName) {
 }
 
 function loadSavedTheme() {
-  const saved = localStorage.getItem(THEME_STORAGE_KEY);
-  if (saved) {
-    applyTheme(saved);
-    if (themeSelect) {
-      themeSelect.value = saved;
-    }
+  const theme = localStorage.getItem(THEME_STORAGE_KEY) || DEFAULT_THEME;
+  applyTheme(theme);
+  if (themeSelect) {
+    themeSelect.value = theme;
   }
 }
 
@@ -2179,6 +2178,158 @@ if (themeSelect) {
 
 // Load theme on startup
 loadSavedTheme();
+
+// =============================================================================
+// Web-dev color picker (native EyeDropper API)
+// =============================================================================
+const eyedropperBtn = document.getElementById('eyedropper-btn');
+const eyedropperStatus = document.getElementById('eyedropper-status');
+const colorReadout = document.getElementById('color-readout');
+const colorSwatch = document.getElementById('color-swatch');
+const colorHexEl = document.getElementById('color-hex');
+const colorRgbEl = document.getElementById('color-rgb');
+const colorHslEl = document.getElementById('color-hsl');
+const colorHistoryList = document.getElementById('color-history-list');
+const COLOR_HISTORY_KEY = 'archon-color-history';
+const COLOR_HISTORY_LIMIT = 12;
+
+function setEyedropperStatus(message, tone = '') {
+  if (eyedropperStatus) {
+    eyedropperStatus.textContent = message;
+    eyedropperStatus.setAttribute('data-tone', tone);
+  }
+}
+
+function hexToRgb(hex) {
+  const value = hex.replace('#', '');
+  return {
+    r: parseInt(value.slice(0, 2), 16),
+    g: parseInt(value.slice(2, 4), 16),
+    b: parseInt(value.slice(4, 6), 16),
+  };
+}
+
+function rgbToHsl({ r, g, b }) {
+  const rn = r / 255;
+  const gn = g / 255;
+  const bn = b / 255;
+  const max = Math.max(rn, gn, bn);
+  const min = Math.min(rn, gn, bn);
+  const delta = max - min;
+  let h = 0;
+  if (delta !== 0) {
+    if (max === rn) {
+      h = ((gn - bn) / delta) % 6;
+    } else if (max === gn) {
+      h = (bn - rn) / delta + 2;
+    } else {
+      h = (rn - gn) / delta + 4;
+    }
+    h = Math.round(h * 60);
+    if (h < 0) h += 360;
+  }
+  const l = (max + min) / 2;
+  const s = delta === 0 ? 0 : delta / (1 - Math.abs(2 * l - 1));
+  return {
+    h,
+    s: Math.round(s * 100),
+    l: Math.round(l * 100),
+  };
+}
+
+function formatColor(hex) {
+  const rgb = hexToRgb(hex);
+  const hsl = rgbToHsl(rgb);
+  return {
+    hex: hex.toLowerCase(),
+    rgb: `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`,
+    hsl: `hsl(${hsl.h}, ${hsl.s}%, ${hsl.l}%)`,
+  };
+}
+
+async function copyColorValue(text, label) {
+  try {
+    await navigator.clipboard.writeText(text);
+    setEyedropperStatus(`Copied ${label}: ${text}`, 'success');
+  } catch (_err) {
+    setEyedropperStatus(`Could not copy to clipboard (${text})`, 'error');
+  }
+}
+
+function renderColor(hex) {
+  const colors = formatColor(hex);
+  if (colorReadout) colorReadout.hidden = false;
+  if (colorSwatch) colorSwatch.style.background = colors.hex;
+  if (colorHexEl) colorHexEl.textContent = colors.hex;
+  if (colorRgbEl) colorRgbEl.textContent = colors.rgb;
+  if (colorHslEl) colorHslEl.textContent = colors.hsl;
+}
+
+function loadColorHistory() {
+  try {
+    const raw = localStorage.getItem(COLOR_HISTORY_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_err) {
+    return [];
+  }
+}
+
+function renderColorHistory(history) {
+  if (!colorHistoryList) return;
+  colorHistoryList.textContent = '';
+  history.forEach((hex) => {
+    const item = document.createElement('li');
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'color-history-swatch';
+    btn.style.background = hex;
+    btn.title = `${hex} — click to reselect`;
+    btn.setAttribute('aria-label', `Sampled color ${hex}`);
+    btn.addEventListener('click', () => renderColor(hex));
+    item.append(btn);
+    colorHistoryList.append(item);
+  });
+}
+
+function pushColorHistory(hex) {
+  const normalized = hex.toLowerCase();
+  const history = loadColorHistory().filter((entry) => entry !== normalized);
+  history.unshift(normalized);
+  const trimmed = history.slice(0, COLOR_HISTORY_LIMIT);
+  localStorage.setItem(COLOR_HISTORY_KEY, JSON.stringify(trimmed));
+  renderColorHistory(trimmed);
+}
+
+async function pickColor() {
+  if (typeof window.EyeDropper !== 'function') {
+    setEyedropperStatus('EyeDropper API is unavailable in this browser.', 'error');
+    return;
+  }
+  try {
+    const result = await new window.EyeDropper().open();
+    const hex = result.sRGBHex;
+    renderColor(hex);
+    pushColorHistory(hex);
+    setEyedropperStatus(`Sampled ${hex.toLowerCase()} — click a value to copy.`, 'success');
+  } catch (_err) {
+    setEyedropperStatus('Color selection canceled.', 'pending');
+  }
+}
+
+if (eyedropperBtn) {
+  eyedropperBtn.addEventListener('click', pickColor);
+}
+if (colorHexEl) {
+  colorHexEl.addEventListener('click', () => copyColorValue(colorHexEl.textContent, 'HEX'));
+}
+if (colorRgbEl) {
+  colorRgbEl.addEventListener('click', () => copyColorValue(colorRgbEl.textContent, 'RGB'));
+}
+if (colorHslEl) {
+  colorHslEl.addEventListener('click', () => copyColorValue(colorHslEl.textContent, 'HSL'));
+}
+renderColorHistory(loadColorHistory());
 
 // =============================================================================
 // N8N Workflow Integration

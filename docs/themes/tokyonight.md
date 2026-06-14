@@ -4,19 +4,19 @@ _Revision: 2025-10-27_
 
 ## Palette Reference
 
-Borrowing from [folke/tokyonight.nvim](https://github.com/folke/tokyonight.nvim) with light adjustments to suit Archon's UI surfaces:
+Archon ships **Tokyo Night Storm** as the default palette (`tokyonight-storm`), with `tokyonight` (night) and `tokyonight-moon` selectable as alternates. Borrowing from [folke/tokyonight.nvim](https://github.com/folke/tokyonight.nvim)'s storm variant with light adjustments to suit Archon's UI surfaces:
 
 | Token            | Hex        | Usage                                            |
 | ---------------- | ---------- | ------------------------------------------------ |
-| `bg.dim`         | `#0f1829`  | Window chrome background, tab strip              |
-| `bg.surface`     | `#111a2f`  | Toolbar, sidebar, omnibox                        |
-| `bg.floating`    | `#161f36`  | Menus, context popovers                          |
+| `bg.dim`         | `#1f2335`  | Window chrome background, tab strip              |
+| `bg.surface`     | `#24283b`  | Toolbar, sidebar, omnibox                        |
+| `bg.floating`    | `#292e42`  | Menus, context popovers                          |
 | `fg.primary`     | `#c0caf5`  | Primary text, tab titles, toolbar labels         |
-| `fg.muted`       | `#7aa2f7`  | Secondary text, inactive tab accents             |
-| `accent.teal`    | `#2dd4bf`  | Default button highlights, focused controls      |
+| `fg.muted`       | `#a9b1d6`  | Secondary text, inactive tab accents             |
+| `accent.primary` | `#7aa2f7`  | Default button highlights, focused controls      |
 | `accent.blue`    | `#7dcfff`  | Selection highlights, focused omnibox            |
-| `accent.mint`    | `#5de4c7`  | Hover states, toggle switches                    |
-| `accent.ghost`   | `#a9b1d6`  | Disabled states, subtle outlines                 |
+| `accent.mint`    | `#73daca`  | Hover states, toggle switches                    |
+| `accent.ghost`   | `#8089b3`  | Disabled states, subtle outlines                 |
 | `danger`         | `#f7768e`  | Destructive actions, error badges                |
 | `warning`        | `#e0af68`  | Permission prompts, caution banners              |
 | `success`        | `#9ece6a`  | Completion confirmations, status chips           |
@@ -28,8 +28,8 @@ Borrowing from [folke/tokyonight.nvim](https://github.com/folke/tokyonight.nvim)
    - Provide matching GTK accent export via `~/.config/archon/themes/tokyonight.toml` for launcher-driven surfaces.
 
 2. **Launcher Integration**
-   - Extend `ui::ThemePreferences` to load theme manifest, defaulting to Tokyo Night on first launch.
-   - When Wayland compositor exposes accent colors, blend them with `accent.teal` to avoid stark clashes.
+   - Extend `ui::ThemePreferences` to load theme manifest, defaulting to Tokyo Night Storm on first launch.
+   - When Wayland compositor exposes accent colors, blend them with `accent.primary` to avoid stark clashes.
    - Add CLI switches `--theme <name>` and `--theme-reset` mirroring config toggles.
 
 3. **Sidebar & Native Host Styling**
@@ -37,8 +37,7 @@ Borrowing from [folke/tokyonight.nvim](https://github.com/folke/tokyonight.nvim)
    - Inject corresponding palette into native messaging responses for sidebar-run WebViews.
 
 4. **Icon Alignment**
-   - Map new `mint` and `ghost` icon sets to the palette (`accent.mint`, `accent.ghost`).
-   - Update `swap-icon.sh` to alias `mint` as the Tokyo Night default when `ui.theme=tokyonight`.
+   - The unified app icon set is generated from `assets/archon.png` via `assets/scripts/generate-icons.sh`; palette accents (`accent.mint`, `accent.ghost`) drive the UI tinting layered on top.
 
 5. **Testing & Validation**
    - Add snapshot tests for theme JSON serialization (Rust unit tests under `ui.rs`).

@@ -12,16 +12,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 pub enum EngineKind {
-    /// Firefox / Gecko based privacy build.
-    Lite,
-    /// Chromium based AI / web3 build.
+    /// Chromium (Chromium Max) based AI / web3 build.
     Edge,
 }
 
 impl std::fmt::Display for EngineKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EngineKind::Lite => write!(f, "archon-lite"),
             EngineKind::Edge => write!(f, "archon-edge"),
         }
     }
@@ -234,6 +231,8 @@ pub struct LaunchSettings {
     #[serde(default)]
     pub automation: AutomationSettings,
     #[serde(default)]
+    pub conduit: ConduitSettings,
+    #[serde(default)]
     pub ipfs: IpfsSettings,
     #[serde(default)]
     pub ens: EnsSettings,
@@ -244,7 +243,7 @@ pub struct LaunchSettings {
 }
 
 fn default_engine_kind() -> EngineKind {
-    EngineKind::Lite
+    EngineKind::Edge
 }
 
 impl Default for LaunchSettings {
@@ -271,6 +270,7 @@ impl Default for LaunchSettings {
             summarize: SummarizeSettings::default(),
             research: ResearchSettings::default(),
             automation: AutomationSettings::default(),
+            conduit: ConduitSettings::default(),
             ipfs: IpfsSettings::default(),
             ens: EnsSettings::default(),
             policy_profile: PolicyProfile::default(),
@@ -363,7 +363,6 @@ impl LaunchSettings {
     /// Retrieve engine-specific configuration by kind.
     pub fn engine_config(&self, kind: EngineKind) -> &EngineSpecificConfig {
         match kind {
-            EngineKind::Lite => &self.engines.lite,
             EngineKind::Edge => &self.engines.edge,
         }
     }
@@ -380,11 +379,9 @@ impl LaunchSettings {
     }
 }
 
-/// Collection of configurations for both engines.
+/// Collection of engine configurations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EngineSettings {
-    #[serde(default = "EngineSpecificConfig::firefox_defaults")]
-    pub lite: EngineSpecificConfig,
     #[serde(default = "EngineSpecificConfig::chromium_defaults")]
     pub edge: EngineSpecificConfig,
 }
@@ -392,7 +389,6 @@ pub struct EngineSettings {
 impl Default for EngineSettings {
     fn default() -> Self {
         Self {
-            lite: EngineSpecificConfig::firefox_defaults(),
             edge: EngineSpecificConfig::chromium_defaults(),
         }
     }
@@ -1171,15 +1167,20 @@ pub struct UiSettings {
     pub accent_color: String,
     #[serde(default)]
     pub unsafe_webgpu_default: bool,
+    /// Let the Wayland compositor (e.g. KWin/Aurorae on KDE) draw native
+    /// server-side window decorations instead of Chromium's client-side
+    /// decorations. Defaults to `true` so KDE shows its native min/max/close.
+    #[serde(default = "bool_true")]
+    pub use_native_decorations: bool,
 }
 
 impl UiSettings {
     fn default_theme() -> String {
-        "tokyonight".into()
+        "tokyonight-storm".into()
     }
 
     fn default_accent() -> String {
-        "#2dd4bf".into()
+        "#7aa2f7".into()
     }
 
     pub fn legacy_default_accent() -> &'static str {
@@ -1195,6 +1196,7 @@ impl Default for UiSettings {
             theme: Self::default_theme(),
             accent_color: Self::default_accent(),
             unsafe_webgpu_default: false,
+            use_native_decorations: true,
         }
     }
 }
@@ -1213,23 +1215,6 @@ pub struct EngineSpecificConfig {
 }
 
 impl EngineSpecificConfig {
-    fn firefox_defaults() -> Self {
-        Self {
-            binary_path: None,
-            extra_args: vec!["--no-remote".into()],
-            env: vec![
-                EnvVar {
-                    key: "GTK_THEME".into(),
-                    value: "Tokyonight-Storm".into(),
-                },
-                EnvVar {
-                    key: "MOZ_USE_XINPUT2".into(),
-                    value: "1".into(),
-                },
-            ],
-        }
-    }
-
     fn chromium_defaults() -> Self {
         Self {
             binary_path: None,
@@ -1609,6 +1594,68 @@ impl Default for AutomationSettings {
             sandbox_mode: true,
             remote_debug_port: Self::default_remote_debug_port(),
             allow_unattended_high_risk: false,
+        }
+    }
+}
+
+// ============================================================================
+// Conduit Settings
+// ============================================================================
+
+/// Conduit per-site JS/CSS injection settings.
+///
+/// Conduit is Archon's built-in userscript/userstyle injector. It loads local,
+/// user-authored `.js`/`.css` files from [`ConduitSettings::dir`] and injects
+/// them into the user's own browser session, matched per-site. It attaches to a
+/// browser already exposing a CDP debug port, so it requires
+/// `automation.remote_debug_port != 0`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConduitSettings {
+    /// Enable Conduit injection (disabled by default).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Directory holding the `.js`/`.css` injection files. Defaults to
+    /// `<config>/conduit` when unset.
+    #[serde(default)]
+    pub dir: Option<PathBuf>,
+    /// Inject matching JavaScript files.
+    #[serde(default = "bool_true")]
+    pub inject_js: bool,
+    /// Inject matching CSS files.
+    #[serde(default = "bool_true")]
+    pub inject_css: bool,
+    /// Polling interval (milliseconds) for discovering new/navigated tabs.
+    #[serde(default = "ConduitSettings::default_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+}
+
+impl ConduitSettings {
+    fn default_poll_interval_ms() -> u64 {
+        750
+    }
+
+    /// Resolve the Conduit directory, defaulting to `<config>/conduit`.
+    pub fn resolve_dir(&self) -> Result<PathBuf> {
+        if let Some(dir) = &self.dir {
+            return Ok(dir.clone());
+        }
+        let config_path = default_config_path()?;
+        let base = config_path
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| PathBuf::from("."));
+        Ok(base.join("conduit"))
+    }
+}
+
+impl Default for ConduitSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dir: None,
+            inject_js: true,
+            inject_css: true,
+            poll_interval_ms: Self::default_poll_interval_ms(),
         }
     }
 }

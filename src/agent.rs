@@ -237,22 +237,80 @@ impl BrowserAgent {
     }
 
     fn persist(&self, outcome: &AgentOutcome) {
-        let Some(dir) = &self.transcript_dir else {
-            return;
-        };
-        if let Err(err) = std::fs::create_dir_all(dir) {
-            tracing::warn!(error = %err, dir = %dir.display(), "failed to create agent transcript dir");
-            return;
+        if let Some(dir) = &self.transcript_dir {
+            persist_outcome(dir, outcome);
         }
-        let path = dir.join(format!("agent-{}.json", outcome.id));
-        match serde_json::to_string_pretty(outcome) {
-            Ok(json) => {
-                if let Err(err) = std::fs::write(&path, json) {
-                    tracing::warn!(error = %err, path = %path.display(), "failed to write agent transcript");
-                }
+    }
+}
+
+/// Render an [`AgentOutcome`] as a human-readable Markdown transcript.
+pub fn render_markdown(outcome: &AgentOutcome) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("# {}\n\n", outcome.goal));
+    out.push_str(&format!("- Run ID: `{}`\n", outcome.id));
+    out.push_str(&format!(
+        "- Mode: {}\n",
+        if outcome.executed {
+            "execute"
+        } else {
+            "preview"
+        }
+    ));
+    out.push_str(&format!("- Completed: {}\n", outcome.completed));
+    out.push_str(&format!("- Steps: {}\n\n", outcome.steps.len()));
+
+    if outcome.steps.is_empty() {
+        out.push_str("_No steps recorded._\n\n");
+    }
+    for step in &outcome.steps {
+        let status = if step.result.success { "ok" } else { "failed" };
+        let target = step
+            .action
+            .selector
+            .as_deref()
+            .or(step.action.value.as_deref())
+            .unwrap_or("");
+        out.push_str(&format!(
+            "## {}. {:?} {} [{status}]\n\n",
+            step.index, step.action.action_type, target
+        ));
+        if !step.observation.is_empty() {
+            out.push_str(&format!("- Observation: {}\n", step.observation));
+        }
+        if let Some(data) = &step.result.data {
+            out.push_str(&format!("- Result: {data}\n"));
+        }
+        if let Some(err) = &step.result.error {
+            out.push_str(&format!("- Error: {err}\n"));
+        }
+        out.push('\n');
+    }
+
+    out.push_str("## Summary\n\n");
+    out.push_str(&outcome.summary);
+    out.push('\n');
+    out
+}
+
+/// Persist an [`AgentOutcome`] to `dir` as both `agent-{id}.json` (pretty) and
+/// `agent-{id}.md` ([`render_markdown`]). Failures are logged, not fatal.
+pub fn persist_outcome(dir: &std::path::Path, outcome: &AgentOutcome) {
+    if let Err(err) = std::fs::create_dir_all(dir) {
+        tracing::warn!(error = %err, dir = %dir.display(), "failed to create agent transcript dir");
+        return;
+    }
+    let json_path = dir.join(format!("agent-{}.json", outcome.id));
+    match serde_json::to_string_pretty(outcome) {
+        Ok(json) => {
+            if let Err(err) = std::fs::write(&json_path, json) {
+                tracing::warn!(error = %err, path = %json_path.display(), "failed to write agent transcript");
             }
-            Err(err) => tracing::warn!(error = %err, "failed to serialize agent outcome"),
         }
+        Err(err) => tracing::warn!(error = %err, "failed to serialize agent outcome"),
+    }
+    let md_path = dir.join(format!("agent-{}.md", outcome.id));
+    if let Err(err) = std::fs::write(&md_path, render_markdown(outcome)) {
+        tracing::warn!(error = %err, path = %md_path.display(), "failed to write agent transcript markdown");
     }
 }
 
@@ -547,8 +605,58 @@ mod tests {
             .run("persist", None, &driver, None, &http, &cancel)
             .expect("agent run");
 
-        let path = dir.join(format!("agent-{}.json", outcome.id));
-        assert!(path.exists(), "transcript json should be written");
+        let json_path = dir.join(format!("agent-{}.json", outcome.id));
+        let md_path = dir.join(format!("agent-{}.md", outcome.id));
+        assert!(json_path.exists(), "transcript json should be written");
+        assert!(md_path.exists(), "transcript markdown should be written");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn render_markdown_includes_goal_steps_and_summary() {
+        let outcome = AgentOutcome {
+            id: Uuid::new_v4(),
+            goal: "Find the docs link".into(),
+            executed: true,
+            steps: vec![AgentStep {
+                index: 1,
+                observation: "URL: https://example.test/".into(),
+                action: WebAction::extract("#lnk").with_description("read link"),
+                result: ActionResult {
+                    action_id: Uuid::new_v4(),
+                    success: true,
+                    data: Some("Docs".into()),
+                    error: None,
+                    latency_ms: 3,
+                    timestamp: Utc::now(),
+                },
+            }],
+            completed: true,
+            summary: "Found the docs link".into(),
+        };
+
+        let md = render_markdown(&outcome);
+        assert!(md.starts_with("# Find the docs link"));
+        assert!(md.contains("## 1. Extract #lnk [ok]"));
+        assert!(md.contains("- Result: Docs"));
+        assert!(md.contains("## Summary"));
+        assert!(md.contains("Found the docs link"));
+    }
+
+    #[test]
+    fn persist_outcome_writes_json_and_markdown() {
+        let dir = std::env::temp_dir().join(format!("archon-agent-export-{}", Uuid::new_v4()));
+        let outcome = AgentOutcome {
+            id: Uuid::new_v4(),
+            goal: "export".into(),
+            executed: false,
+            steps: Vec::new(),
+            completed: false,
+            summary: "done".into(),
+        };
+        persist_outcome(&dir, &outcome);
+        assert!(dir.join(format!("agent-{}.json", outcome.id)).exists());
+        assert!(dir.join(format!("agent-{}.md", outcome.id)).exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

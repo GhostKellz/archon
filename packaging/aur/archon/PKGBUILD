@@ -71,7 +71,6 @@ package() {
         "${pkgdir}/usr/share/doc/${pkgname}/chromium-max.md"
 
     local sizes=(16 24 32 48 64 128 256 512)
-    local variants=(test-alt proto nobak mint ghost)
 
     for size in "${sizes[@]}"; do
         install -Dm644 "assets/desktop.icons/${size}x${size}/apps/archon.png" \
@@ -80,20 +79,8 @@ package() {
     install -Dm644 "assets/desktop.icons/symbolic/apps/archon-symbolic.svg" \
         "${pkgdir}/usr/share/icons/hicolor/symbolic/apps/archon-symbolic.svg"
 
-    for variant in "${variants[@]}"; do
-        for size in "${sizes[@]}"; do
-            local source="assets/alt.desktop.icons/${variant}/${size}x${size}/apps/archon.png"
-            if [[ -f "${source}" ]]; then
-                install -Dm644 "${source}" \
-                    "${pkgdir}/usr/share/archon/icons/alt/${variant}/${size}x${size}/apps/archon.png"
-            fi
-        done
-    done
-
     install -d "${pkgdir}/usr/share/archon/assets"
     cp -r --no-preserve=ownership "assets/desktop.icons" "${pkgdir}/usr/share/archon/assets/"
-    cp -r --no-preserve=ownership "assets/alt.desktop.icons" "${pkgdir}/usr/share/archon/assets/"
-    install -Dm755 "assets/swap-icon.sh" "${pkgdir}/usr/share/archon/assets/swap-icon.sh"
 
     install -d "${pkgdir}/usr/share/archon/tools"
     install -Dm755 "tools/scripts/enable_archon_services.sh" \

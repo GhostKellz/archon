@@ -1,12 +1,12 @@
 # Getting Started
 
-Install Archon, launch a browser engine, and recover from common setup issues.
+Install Archon, launch the Chromium Max engine, and recover from common setup issues.
 
 ## Contents
 
 | Document | Description |
 | --- | --- |
-| [Quick Start](quickstart.md) | Install, configure, and launch Archon engines (Lite/Edge). |
+| [Quick Start](quickstart.md) | Install, configure, and launch the Archon engine. |
 | [Troubleshooting](troubleshooting.md) | Installation diagnostics, theme validator failures, and service recovery. |
 
 ## Quick Commands
@@ -14,9 +14,6 @@ Install Archon, launch a browser engine, and recover from common setup issues.
 ```bash
 # Verify endpoints, providers, and service state
 cargo run --bin archon -- --diagnostics
-
-# Launch the privacy-focused Firefox (Lite) engine
-cargo run --bin archon -- --engine lite
 
 # Launch the hardened Chromium (Edge) engine
 cargo run --bin archon -- --engine edge

@@ -8,7 +8,8 @@ Packaged builds copy these folders into `/usr/share/archon/themes/chromium/` so 
 
 | Folder | Display name | Notes |
 | --- | --- | --- |
-| `tokyonight-night/` | Archon Tokyo Night (Night) | Palette matched to tokyonight.nvim "night" variant. |
+| `tokyonight-storm/` | Archon Tokyo Night (Storm) | Default theme; slate-blue surfaces matched to tokyonight.nvim "storm" variant. |
+| `tokyonight-night/` | Archon Tokyo Night (Night) | Darker palette matched to tokyonight.nvim "night" variant. |
 | `tokyonight-moon/` | Archon Tokyo Night (Moon) | Softer indigo take on tokyonight.nvim. |
 | `material-ocean-deep/` | Archon Material Ocean (Deep Blue) | Material-style deep blue surfaces with aqua accents. |
 | `ride-the-wave-eth/` | Archon Ride the Wave (Ethereum) | Ocean gradients with Ethereum-inspired highlight image. |

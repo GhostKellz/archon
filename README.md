@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/icons/archon-github.png" alt="Archon" width="200" />
+  <img src="assets/icons/archon.png" alt="Archon" width="200" />
 </p>
 
 <h1 align="center">Archon</h1>
@@ -18,7 +18,6 @@
   <img src="https://img.shields.io/badge/Arch_Linux-1793D1?style=for-the-badge&logo=arch-linux&logoColor=white" alt="Arch Linux">
   <img src="https://img.shields.io/badge/Wayland-1793D1?style=for-the-badge&logo=wayland&logoColor=white" alt="Wayland">
   <img src="https://img.shields.io/badge/Chromium-4285F4?style=for-the-badge&logo=googlechrome&logoColor=white" alt="Chromium">
-  <img src="https://img.shields.io/badge/Firefox-FF7139?style=for-the-badge&logo=firefox-browser&logoColor=white" alt="Firefox">
   <img src="https://img.shields.io/badge/GhostDNS-111111?style=for-the-badge" alt="GhostDNS">
   <img src="https://img.shields.io/badge/Tokio-4E5EE4?style=for-the-badge" alt="Tokio">
   <img src="https://img.shields.io/badge/NVIDIA-76B900?style=for-the-badge&logo=nvidia&logoColor=white" alt="NVIDIA">
@@ -92,6 +91,32 @@ Model Context Protocol connectors live under the top-level `mcp` key in `config.
 
 Enable connectors like LangChain, n8n, or bespoke toolboxes by dropping them into `config.json` and exporting any required secrets. The sidebar will refresh the connector list on reconnect and let you invoke tools directly from the browser.
 
+---
+
+## 🤖 Agentic Browser Control
+
+Archon drives a real Chromium session over the DevTools Protocol, so the AI can *act* in the page — not just talk about it. Everything here is safe by default: a preview/dry-run unless you opt into execution with `automation.enabled`.
+
+* **Page awareness** — the sidebar captures the current page's text, selection, title, and URL on demand (readability-extracted, bounded) and feeds it to any provider. Toggle **Include current page** or hit **Summarize page**.
+* **Browser agent** — `archon --agent "<goal>"` runs an observe → plan → act loop (navigate, click, type, scroll, extract, screenshot) with bounded steps, cancellation, and risk-gated confirmation. Add `--agent-execute` to act, `--agent-attach` to drive your already-running hardened session.
+* **Hybrid recipes** — `archon --automate <recipe>` runs ordered flows where each step is either an explicit deterministic action *or* a natural-language goal handed to the agent. Bare names resolve under `automation/recipes/<name>.json`.
+* **Transcript export** — every agent and recipe run is written as JSON *and* Markdown under `transcripts/agents/`; add `--agent-export <dir>` to mirror both files elsewhere.
+
+See [`docs/automation/recipes.md`](docs/automation/recipes.md) for the recipe schema and safety model.
+
+### MCP server
+
+`archon --mcp` exposes the browser as a standard Model Context Protocol server over stdio (newline-delimited JSON-RPC 2.0), so Claude Code, Codex, Gemini CLI, and Jarvis can drive it through one protocol. It serves six tools — `read_page`, `screenshot`, `navigate`, `click`, `type`, `run_task`. Read-only tools are always allowed; mutating tools require `automation.enabled`, and unattended High/Critical steps require `automation.allow_unattended_high_risk` (default `false`). Copy-paste client configs live in [`docs/integrations/mcp-server.md`](docs/integrations/mcp-server.md).
+
+### Conduit — per-site script & style injection
+
+`archon --conduit` injects your own local `.js` / `.css` into matching sites in your own session over CDP — the Tampermonkey/Stylus model, Rust-native. Files in the Conduit directory match by host and path (`_global` first, then domain levels TLD→full and cumulative path prefixes, most-specific applied last), with a path-traversal guard and per-file size bound. Off by default; requires `conduit.enabled` and a non-zero `automation.remote_debug_port`. See [`docs/integrations/conduit.md`](docs/integrations/conduit.md).
+
+### Sidebar tools
+
+The sidebar's **Tools** tab ships web-dev utilities, including a native EyeDropper color picker — sample any on-screen pixel and copy **HEX / RGB / HSL**, with a locally stored recent-swatch history. See [`docs/integrations/sidebar-tools.md`](docs/integrations/sidebar-tools.md).
+
+---
 
 ## 🪙 Crypto-Native Features
 
@@ -126,7 +151,7 @@ The Rust launcher orchestrates engine binaries, profile state, AI providers, cry
 cargo run -- --diagnostics
 ```
 
-Shows a full health report including engine discovery, AI providers, crypto networks, and Wayland availability. Use `--engine` / `--profile` / `--mode` to drive `archon-lite` (privacy focus) or `archon-edge` (AI/Web3) with per-profile storage.
+Shows a full health report including engine discovery, AI providers, crypto networks, and Wayland availability. Use `--profile` / `--mode` to drive the hardened `archon-edge` (Chromium Max) engine with per-profile storage.
 
 Every executed launch now records a structured JSON-L trail (`sync/events.jsonl`) with session IDs, PIDs, exit codes, and durations. Tail it with `jq` or ship it into your observability stack for real-time telemetry.
 
@@ -170,13 +195,13 @@ Disable the metrics listener by removing or commenting `metrics_listen` in `ghos
 
 ### Wayland-first engine tuning
 
-Archon now inspects the active desktop session before every launch and automatically tunes each engine:
+Archon inspects the active desktop session before every launch and automatically tunes the engine:
 
-- **Archon Lite (Firefox)** — injects `MOZ_ENABLE_WAYLAND=1`, enables WebRender + VAAPI, and falls back to `GDK_BACKEND=x11` only when Wayland isn’t available.
-- **Archon Edge (Chromium)** — adds `--ozone-platform=wayland`, `--use-gl=egl`, GPU rasterisation flags, and preserves custom `--enable-features` from your config.
-- Respect `ui.prefer_wayland` / `ui.allow_x11_fallback` from `config.json`, failing fast if Wayland is required but missing.
+- **Archon Edge (Chromium Max)** — adds `--ozone-platform=wayland`, `--use-gl=egl`, GPU rasterisation flags, and preserves custom `--enable-features` from your config.
+- Respects `ui.prefer_wayland` / `ui.allow_x11_fallback` from `config.json`, failing fast if Wayland is required but missing.
+- Defers window decorations to KDE/KWin by default (`ui.use_native_decorations`); set it `false` to restore Chromium client-side decorations.
 
-Custom `engines.*.extra_args` or `engines.*.env` entries continue to override the built-in defaults, letting you fine-tune Archon for exotic desktops or GPU stacks.
+Custom `engines.edge.extra_args` or `engines.edge.env` entries continue to override the built-in defaults, letting you fine-tune Archon for exotic desktops or GPU stacks.
 
 ### Crypto-native resolution & AI chat
 
@@ -189,7 +214,7 @@ Default config is generated on first launch:
 
 ```jsonc
 {
-   "default_engine": "lite",
+   "default_engine": "edge",
    "ai": {
       "default_provider": "ollama-local",
       "providers": [
@@ -295,7 +320,12 @@ Default config is generated on first launch:
 | 🥬 ENS / UD resolution             | ✅ Implemented |
 | 📡 AI host + native messaging      | ✅ Implemented |
 | 🧠 LLM chat with attachments       | ✅ Implemented |
-| 🔌 MCP / n8n / Arc integrations    | ⚙️ Prototype  |
+| 🤖 Browser agent (observe-plan-act) | ✅ Implemented |
+| 📋 Hybrid automation recipes        | ✅ Implemented |
+| 🔗 MCP server (stdio JSON-RPC)      | ✅ Implemented |
+| 💉 Conduit per-site JS/CSS injection | ✅ Implemented |
+| 🎨 Chromium theme pack (Storm default) | ✅ Implemented |
+| 🔌 MCP / n8n connectors (consume)   | ⚙️ Prototype  |
 | 🔏 Ad / Tracker blocking           | 🛠️ Planned   |
 | 🧘 Zen-mode UI                     | 🛠️ Planned   |
 | 📦 Packaging beyond AUR/dev flows  | 🔜 Soon       |
@@ -314,7 +344,7 @@ For compositor + GPU coverage, kick off the automation pipeline with `tools/buil
 
 ## 🎨 Chromium Theme Pack
 
-Archon now ships a curated bundle of Chromium themes alongside the browser. Load them via `chrome://extensions` (Developer Mode → **Load unpacked**) and point at any folder under `extensions/themes/`. Highlights include the Tokyo Night (Night + Moon) defaults, Material Ocean Deep, and a collection of ThemeBeta favorites like Firewatch, Neon Driver, and Arch Linux (blue).
+Archon now ships a curated bundle of Chromium themes alongside the browser. Load them via `chrome://extensions` (Developer Mode → **Load unpacked**) and point at any folder under `extensions/themes/`. Highlights include the Tokyo Night Storm default (with Night and Moon variants), Material Ocean Deep, and a collection of ThemeBeta favorites like Firewatch, Neon Driver, and Arch Linux (blue).
 
 See `extensions/themes/README.md` for the full catalogue and packaging guidance. A lightweight validator helps keep imported themes tidy:
 
@@ -334,12 +364,11 @@ The script verifies Manifest V3 metadata, required fields, and the presence of `
 
 See `packaging/README.md` for a deeper dive into distribution artifacts and helper scripts like `tools/scripts/package_sidebar.sh` (regenerate sidebar ZIP) and `tools/scripts/export_theme_pack.sh` (stage Chromium themes for packaging). For step-by-step recovery scenarios, read `docs/getting-started/troubleshooting.md`.
 
-## 🖼 Icon Variants
+## 🖼 Branding
 
-* Default branding assets live in `assets/desktop.icons/` and are what the Archon wrapper installs into the system `hicolor` theme.
-* Optional alternates (`test-alt`, `proto`, `nobak`, `mint`, `ghost`) reside in `assets/alt.desktop.icons/` and are packaged under `/usr/share/archon/icons/alt/` for easy swapping post-install.
-* Run `./assets/swap-icon.sh test-alt` (or any other variant) during development to refresh the `desktop.icons` tree, then rebuild or update the icon cache with `sudo gtk-update-icon-cache -f /usr/share/icons/hicolor/` to see changes system-wide.
-* The AUR package drops the same script under `/usr/share/archon/assets/swap-icon.sh`, alongside the icon sources, so power users can toggle looks without touching the git checkout.
+* The single source logo is `assets/archon.png`. All app/launcher icons and the README logo are derived from it.
+* Run `./assets/scripts/generate-icons.sh` to regenerate `assets/desktop.icons/<size>x<size>/apps/archon.png` (the hicolor app icons the wrapper installs) and `assets/icons/archon-github.png` (README logo). Requires ImageMagick.
+* After installing, refresh the system cache with `sudo gtk-update-icon-cache -f /usr/share/icons/hicolor/` if needed.
 * Theme manifests ship under `/usr/share/archon/themes/`. The default `tokyonight` palette is auto-installed into `~/.config/Archon/themes/tokyonight.json` the first time the launcher runs.
 
 ---
@@ -382,6 +411,6 @@ If you hit packaging or installation hiccups, file an issue using the "Packaging
 
 ## 📜 License
 
-MIT License © 2025 [GhostKellz](https://ghostkellz.sh) / CK Technology
+MIT License © 2026 [GhostKellz](https://ghostkellz.sh) / CK Technology
 
 > **Archon** — *Power behind the screen.*

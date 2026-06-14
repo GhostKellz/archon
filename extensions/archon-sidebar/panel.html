@@ -232,6 +232,25 @@
         </form>
         <section id="tool-log" class="tool-log" aria-live="polite"></section>
       </section>
+      <section id="color-picker" class="data-section">
+        <div class="section-header">
+          <h2>Color picker</h2>
+          <button type="button" id="eyedropper-btn">Pick color</button>
+        </div>
+        <p class="status" id="eyedropper-status" data-tone="pending">Sample any pixel on screen with the native eyedropper.</p>
+        <div class="color-readout" hidden id="color-readout">
+          <span class="color-swatch" id="color-swatch" aria-hidden="true"></span>
+          <div class="color-values">
+            <button type="button" class="color-value" id="color-hex" title="Copy HEX"></button>
+            <button type="button" class="color-value" id="color-rgb" title="Copy RGB"></button>
+            <button type="button" class="color-value" id="color-hsl" title="Copy HSL"></button>
+          </div>
+        </div>
+        <div class="color-history">
+          <h3>Recent</h3>
+          <ul id="color-history-list" class="color-history-list" aria-label="Recently sampled colors"></ul>
+        </div>
+      </section>
       <section id="settings" class="data-section">
         <div class="section-header">
           <h2>Appearance</h2>
@@ -240,8 +259,8 @@
           <label for="theme-select">Theme</label>
           <select id="theme-select" name="theme">
             <optgroup label="Tokyo Night">
-              <option value="tokyonight" selected>Tokyo Night</option>
-              <option value="tokyonight-storm">Tokyo Night Storm</option>
+              <option value="tokyonight-storm" selected>Tokyo Night Storm</option>
+              <option value="tokyonight">Tokyo Night</option>
               <option value="tokyonight-moon">Tokyo Night Moon</option>
             </optgroup>
             <optgroup label="Alternative">

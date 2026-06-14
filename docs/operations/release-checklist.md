@@ -6,7 +6,7 @@ Use this checklist before publishing a new Archon build or tag. Each section can
 
 - [ ] Update `Cargo.lock` and verify `cargo fmt`, `cargo clippy`, `cargo test`, and `cargo audit` succeed on the release toolchain.
 - [ ] Re-run `python tools/check_theme_manifests.py` for a clean Chromium theme validation report.
-- [ ] Confirm `assets/desktop.icons` and alternates match the intended release branding.
+- [ ] Confirm `assets/desktop.icons` (regenerated from `assets/archon.png` via `assets/scripts/generate-icons.sh`) match the intended release branding.
 - [ ] Ensure `config.json` schema and sample defaults reflect the supported AI providers and crypto networks.
 - [ ] Open the "Packaging / Installation" issue template and confirm guidance covers new features (`.github/ISSUE_TEMPLATE/packaging.md`).
 

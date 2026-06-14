@@ -6,8 +6,9 @@ Archon bundles a curated set of Chromium themes so the browser looks polished on
 
 | ID | Display name | Origin | Notes |
 | --- | --- | --- | --- |
-| `tokyonight-night` | Archon Tokyo Night (Night) | In-house | Default palette; deep navy surfaces inspired by tokyonight.nvim. |
-| `tokyonight-moon` | Archon Tokyo Night (Moon) | In-house | Slightly brighter moonlit take on the default palette. |
+| `tokyonight-storm` | Archon Tokyo Night (Storm) | In-house | **Default palette**; slate-blue surfaces with azure accents inspired by tokyonight.nvim's storm variant. |
+| `tokyonight-night` | Archon Tokyo Night (Night) | In-house | Darker variant with deep navy surfaces. |
+| `tokyonight-moon` | Archon Tokyo Night (Moon) | In-house | Slightly brighter moonlit take with periwinkle accents. |
 | `material-ocean-deep` | Archon Material Ocean (Deep) | In-house | Material design accents with aqua highlight states. |
 | `ride-the-wave-eth` | Archon Ride the Wave (Ethereum) | In-house | Gradient ocean backdrop + Ethereum highlight glyph. |
 | `arch-linux-blue` | Arch Linux (blue) | ThemeBeta | Mountain skyline with Arch blue chrome. |
@@ -40,4 +41,4 @@ The script ensures every manifest targets V3, exposes the required `name`, `vers
 
 - `extensions/themes/README.md` — quickstart for loading themes, including developer-mode instructions.
 - `docs/themes/tokyonight.md` — palette blueprint for the default Archon theme, covering UI tokens and integration points.
-- `assets/ICON_VARIANTS.md` — icon swap guidance that pairs with the bundled wallpapers and themes for cohesive branding.
+- `assets/scripts/generate-icons.sh` — regenerates the unified app icon set from `assets/archon.png` for cohesive branding.

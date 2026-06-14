@@ -294,7 +294,7 @@ mod tests {
 
         let profile = store.ensure_profile("beta").unwrap();
         let command = CommandSpec::new(
-            PathBuf::from("/usr/bin/firefox"),
+            PathBuf::from("/usr/bin/chromium"),
             vec![
                 "--profile".into(),
                 profile.directory.to_string_lossy().into(),
@@ -306,7 +306,7 @@ mod tests {
         store
             .record_launch(
                 &profile,
-                EngineKind::Lite,
+                EngineKind::Edge,
                 LaunchMode::Privacy,
                 &command,
                 session_id,
