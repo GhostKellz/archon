@@ -39,7 +39,7 @@ webpki-roots = "1.0"
 cid = "0.11"
 hex = "0.4"
 unsigned-varint = "0.8"
-	infer = "0.15"
+	infer = "0.19"
 quinn = { version = "0.11", features = ["rustls"] }
 rustls-pki-types = "1.12"
 dialoguer = { version = "0.11", default-features = false, features = ["editor", "fuzzy-select"] }
