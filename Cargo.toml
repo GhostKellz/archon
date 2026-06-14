@@ -32,7 +32,7 @@ base64 = "0.22"
 futures-util = "0.3"
 hickory-proto = { version = "0.26", features = ["serde"] }
 toml = "0.8"
-tower = "0.4"
+tower = "0.5"
 prometheus = { version = "0.14", default-features = false }
 tokio-rustls = "0.26"
 webpki-roots = "1.0"
