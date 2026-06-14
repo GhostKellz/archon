@@ -88,7 +88,7 @@ Both commands should report a “~9x” hardening score; compare the diff output
    ```
 2. For each failing manifest, bump `manifest_version` to 3 and ensure required `theme` keys are present.
 3. Commit the formatted JSON (pretty-print with two-space indentation as in existing files).
-4. See also [packaging/README.md](../packaging/README.md#faq) for packaging-time validation tips and reproducibility notes.
+4. See also [packaging/README.md](../../packaging/README.md#faq) for packaging-time validation tips and reproducibility notes.
 
 ## Packaging Gotchas
 
@@ -100,7 +100,7 @@ Both commands should report a “~9x” hardening score; compare the diff output
   ```bash
   ./tools/scripts/export_theme_pack.sh dist/themes/chromium
   ```
-- Review `packaging/README.md` and `docs/release_checklist.md` before tagging.
+- Review `packaging/README.md` and `docs/operations/release-checklist.md` before tagging.
 
 ## Still Stuck?
 

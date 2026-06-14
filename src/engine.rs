@@ -276,10 +276,21 @@ impl BrowserEngine for ChromiumEngine {
             "--gpu-rasterization".into(),
             "--enable-gpu-memory-buffer-video-frames".into(),
             "--ignore-gpu-blocklist".into(),
-            "--remote-debugging-port=0".into(),
             "--disable-background-networking".into(),
             "--password-store=basic".into(),
         ]);
+
+        // CDP remote debugging: a fixed port (when the agent needs to attach to
+        // this visible session) requires `--remote-allow-origins` on modern
+        // Chromium for the WebSocket handshake; otherwise use an unused
+        // ephemeral port so nothing external can drive the browser.
+        match request.remote_debug_port {
+            Some(port) => {
+                args.push(format!("--remote-debugging-port={port}"));
+                args.push("--remote-allow-origins=*".into());
+            }
+            None => args.push("--remote-debugging-port=0".into()),
+        }
 
         let should_use_vulkan = if matches!(ui.gpu_vendor, GpuVendor::Nvidia) {
             using_vulkan_angle || use_wayland
@@ -377,7 +388,7 @@ impl BrowserEngine for ChromiumEngine {
 fn merge_args(base: Vec<String>, extras: Vec<String>) -> Vec<String> {
     let mut merged = Vec::new();
     let mut seen = HashSet::new();
-    for arg in base.into_iter().chain(extras.into_iter()) {
+    for arg in base.into_iter().chain(extras) {
         if !seen.insert(arg.clone())
             && let Some(pos) = merged.iter().position(|existing| existing == &arg)
         {

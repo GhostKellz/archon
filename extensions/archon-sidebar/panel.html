@@ -16,6 +16,7 @@
     <nav class="tab-nav" role="tablist">
       <button class="tab-btn active" role="tab" aria-selected="true" data-tab="chat">Chat</button>
       <button class="tab-btn" role="tab" aria-selected="false" data-tab="arc">Arc</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="agent">Agent</button>
       <button class="tab-btn" role="tab" aria-selected="false" data-tab="n8n">N8N</button>
       <button class="tab-btn" role="tab" aria-selected="false" data-tab="tools">Tools</button>
     </nav>
@@ -40,12 +41,22 @@
             </button>
             <button type="submit">Send</button>
           </div>
+          <div class="page-context-control">
+            <label class="page-context-toggle" title="Attach the current page (title, URL, selection, and main text) to your message">
+              <input type="checkbox" id="include-page" name="include-page" />
+              <span>📄 Include current page</span>
+            </label>
+            <button type="button" id="summarize-page-btn" class="page-context-btn" title="Summarize the current page with the selected provider">
+              Summarize page
+            </button>
+          </div>
           <div id="provider-capabilities" class="provider-capabilities" aria-live="polite"></div>
           <div id="conversation-context" class="conversation-context" hidden>
             <span id="conversation-context-label"></span>
             <button type="button" id="conversation-reset">Start new thread</button>
           </div>
         </form>
+        <div id="followups" class="followups" aria-live="polite" hidden></div>
         <section id="log" aria-live="polite"></section>
       </section>
 
@@ -74,6 +85,43 @@
             <p class="arc-hint">Try: "What's new in Rust 2024?" or "Latest AI news"</p>
           </div>
         </section>
+      </section>
+
+      <!-- Agent Tab (autonomous browsing) -->
+      <section id="tab-agent" class="tab-panel" role="tabpanel" hidden>
+        <form id="agent-form" class="agent-form">
+          <label class="sr-only" for="agent-goal">Goal</label>
+          <textarea id="agent-goal" name="goal" rows="3" placeholder="Describe what Archon should do… e.g. 'Find the pricing page and report the cheapest plan.'" required></textarea>
+          <div class="agent-options">
+            <label class="sr-only" for="agent-start-url">Start URL</label>
+            <input type="url" id="agent-start-url" name="start_url" placeholder="Start URL (optional)" />
+            <label class="agent-steps">
+              <span>Max steps</span>
+              <input type="number" id="agent-max-steps" name="max_steps" min="1" max="50" value="8" />
+            </label>
+          </div>
+          <div class="agent-options">
+            <select id="agent-provider" name="provider">
+              <option value="">Default provider</option>
+            </select>
+          </div>
+          <div class="agent-toggles">
+            <label class="agent-toggle" title="Attach to the page already open in your browser instead of launching a new one">
+              <input type="checkbox" id="agent-attach" name="attach" />
+              <span>Attach to current page</span>
+            </label>
+            <label class="agent-toggle" title="Perform real actions (requires automation.enabled). Off = preview/dry-run.">
+              <input type="checkbox" id="agent-execute" name="execute" />
+              <span>Execute (live actions)</span>
+            </label>
+          </div>
+          <div class="controls">
+            <button type="submit" id="agent-run-btn">Run agent</button>
+          </div>
+        </form>
+        <div id="agent-status" class="agent-status" hidden></div>
+        <ol id="agent-steps" class="agent-steps-list" aria-live="polite"></ol>
+        <article id="agent-summary" class="agent-summary" hidden></article>
       </section>
 
       <!-- N8N Workflows Tab -->

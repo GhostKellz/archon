@@ -3,18 +3,22 @@ use std::{
     convert::Infallible,
     net::SocketAddr,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::AtomicBool},
     thread,
     time::{Duration, Instant, SystemTime},
 };
 
 use anyhow::{Context, Result, bail};
+use archon::agent::{AgentOutcome, BrowserAgent};
 use archon::ai::{
     AiAttachment, AiAttachmentKind, AiBridge, AiChatHistoryEntry, AiChatPrompt, AiChatResponse,
-    AiChatRole, AiHttp, BlockingAiHttp,
+    AiChatRole, AiHttp, BlockingAiHttp, PageContext, PageSegment,
 };
+use archon::automation::AutomationOrchestrator;
+use archon::browser::CdpBrowser;
 use archon::config::{
-    AiHostSettings, AiProviderConfig, AiProviderKind, LaunchSettings, default_config_path,
+    AiHostSettings, AiProviderConfig, AiProviderKind, AutomationSettings, LaunchSettings,
+    default_config_path,
 };
 use archon::crypto::CryptoStack;
 use archon::host::AiHost;
@@ -83,6 +87,10 @@ struct AppState {
     transcripts: Arc<TranscriptStore>,
     crypto: Arc<CryptoStack>,
     provider_health: Arc<Mutex<HashMap<String, ProviderHealthSnapshot>>>,
+    automation: AutomationSettings,
+    /// Resolved profile directory used as the DevToolsActivePort fallback when
+    /// attaching the agent to the user's running browser.
+    profile_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -110,6 +118,60 @@ struct ChatRequest {
     history: Vec<HistoryEntryPayload>,
     #[serde(default)]
     conversation_id: Option<String>,
+    #[serde(default)]
+    page_context: Option<PageContextPayload>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PageContextPayload {
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    selected_text: Option<String>,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    segments: Vec<PageSegmentPayload>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PageSegmentPayload {
+    #[serde(rename = "ref")]
+    reference: String,
+    #[serde(default)]
+    text: String,
+}
+
+impl PageContextPayload {
+    fn into_context(self) -> PageContext {
+        let clean = |value: Option<String>| {
+            value
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        };
+        let segments = self
+            .segments
+            .into_iter()
+            .filter_map(|seg| {
+                let reference = seg.reference.trim().to_string();
+                let text = seg.text.trim().to_string();
+                if reference.is_empty() || text.is_empty() {
+                    None
+                } else {
+                    Some(PageSegment { reference, text })
+                }
+            })
+            .collect();
+        PageContext {
+            url: clean(self.url),
+            title: clean(self.title),
+            selected_text: clean(self.selected_text),
+            content: clean(self.content),
+            segments,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -250,9 +312,12 @@ impl ChatRequest {
             .map(|entry| entry.into_entry())
             .collect::<Result<Vec<_>>>()?;
 
+        let page_context = self.page_context.map(PageContextPayload::into_context);
+
         Ok(AiChatPrompt::with_attachments(self.prompt, attachments)
             .with_conversation(conversation_id)
             .with_history(history)
+            .with_page_context(page_context)
             .with_source(TranscriptSource::Sidebar))
     }
 }
@@ -590,7 +655,12 @@ async fn main() -> Result<()> {
         match tokio::task::spawn_blocking(move || McpOrchestrator::from_settings(mcp_settings))
             .await
         {
-            Ok(orchestrator) => Arc::new(orchestrator),
+            Ok(Ok(orchestrator)) => Arc::new(orchestrator),
+            Ok(Err(err)) => {
+                let error = err.context("failed to initialise MCP orchestrator");
+                telemetry.record_error(&error);
+                return Err(error);
+            }
             Err(err) => {
                 let error = anyhow::anyhow!(err).context("failed to initialise MCP orchestrator");
                 telemetry.record_error(&error);
@@ -720,6 +790,10 @@ async fn main() -> Result<()> {
         }
     };
 
+    let profile_dir = settings
+        .resolve_profile_root()
+        .ok()
+        .map(|root| root.join("default"));
     let state = AppState {
         bridge,
         mcp,
@@ -728,6 +802,8 @@ async fn main() -> Result<()> {
         transcripts,
         crypto,
         provider_health,
+        automation: settings.automation.clone(),
+        profile_dir,
     };
     let router = Router::new()
         .route("/health", get(health_handler))
@@ -737,6 +813,7 @@ async fn main() -> Result<()> {
         .route("/summarize", post(summarize_handler))
         .route("/vision", post(vision_handler))
         .route("/chat/stream", post(chat_stream_handler))
+        .route("/agent/run", post(agent_run_handler))
         .route("/connectors", get(connectors_handler))
         .route("/tool-call", post(tool_call_handler))
         .route("/resolve", get(resolve_handler))
@@ -1858,30 +1935,35 @@ async fn chat_stream_handler(
             return;
         }
 
+        let streaming_event = Event::default()
+            .event("status")
+            .data(json!({ "stage": "streaming" }).to_string());
+        if tx.send(Ok(streaming_event)).await.is_err() {
+            return;
+        }
+
+        // Bridge true provider deltas (Ollama tokens; a single delta for other
+        // providers) from the blocking AI call onto the SSE channel.
+        let delta_tx = tx.clone();
         let chat_result = task::spawn_blocking(move || {
             let client = archon::ai::BlockingAiHttp::default();
-            chat_bridge.chat_with_prompt(provider.as_deref(), prompt, &client)
+            let mut on_delta = |delta: &str| {
+                let event = Event::default()
+                    .event("delta")
+                    .data(json!({ "text": delta }).to_string());
+                let _ = delta_tx.blocking_send(Ok(event));
+            };
+            chat_bridge.chat_with_prompt_streaming(
+                provider.as_deref(),
+                prompt,
+                &client,
+                &mut on_delta,
+            )
         })
         .await;
 
         match chat_result {
             Ok(Ok(response)) => {
-                let streaming_event = Event::default()
-                    .event("status")
-                    .data(json!({ "stage": "streaming" }).to_string());
-                if tx.send(Ok(streaming_event)).await.is_err() {
-                    return;
-                }
-
-                for chunk in chunk_response_text(&response.reply) {
-                    let event = Event::default()
-                        .event("delta")
-                        .data(json!({ "text": chunk }).to_string());
-                    if tx.send(Ok(event)).await.is_err() {
-                        return;
-                    }
-                }
-
                 match serde_json::to_string(&response) {
                     Ok(serialised) => {
                         let complete_event = Event::default().event("complete").data(serialised);
@@ -1924,38 +2006,155 @@ async fn chat_stream_handler(
     ))
 }
 
-fn chunk_response_text(text: &str) -> Vec<String> {
-    if text.trim().is_empty() {
-        return Vec::new();
+#[derive(Debug, Deserialize)]
+struct AgentRunRequest {
+    goal: String,
+    #[serde(default)]
+    start_url: Option<String>,
+    #[serde(default)]
+    max_steps: Option<usize>,
+    #[serde(default)]
+    execute: bool,
+    #[serde(default)]
+    attach: bool,
+    #[serde(default)]
+    provider: Option<String>,
+}
+
+async fn agent_run_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<AgentRunRequest>,
+) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ApiError> {
+    let goal = payload.goal.trim().to_string();
+    if goal.is_empty() {
+        return Err(ApiError::bad_request("agent goal must not be empty"));
     }
-    let segments: Vec<&str> = text.split('\n').collect();
-    let mut chunks = Vec::new();
-    for (index, segment) in segments.iter().enumerate() {
-        let trimmed = segment.trim();
-        if !trimmed.is_empty() {
-            let mut current = String::new();
-            for word in trimmed.split_whitespace() {
-                if !current.is_empty() {
-                    current.push(' ');
+
+    // Safety: real execution requires automation to be explicitly enabled. Without
+    // it the run is a preview (dry-run) that observes and plans but never mutates.
+    if payload.execute && !state.automation.enabled {
+        return Err(ApiError::bad_request(
+            "execute requires automation.enabled = true in config; \
+             omit execute for a preview (dry-run)",
+        ));
+    }
+
+    let automation = state.automation.clone();
+    let bridge = Arc::clone(&state.bridge);
+    let transcript_root = state.transcripts.root().to_path_buf();
+    let profile_dir = state.profile_dir.clone();
+
+    let max_steps = payload.max_steps.unwrap_or(8).clamp(1, 50);
+    let execute = payload.execute;
+    let attach = payload.attach;
+    let provider = payload.provider.clone();
+    let start_url = payload.start_url.clone();
+
+    let (tx, rx) = mpsc::channel::<Result<Event, String>>(64);
+
+    tokio::spawn(async move {
+        let started_event = Event::default().event("status").data(
+            json!({ "stage": "started", "execute": execute, "attach": attach }).to_string(),
+        );
+        if tx.send(Ok(started_event)).await.is_err() {
+            return;
+        }
+
+        // Steps are streamed live via the per-step observer using blocking_send,
+        // mirroring the delta bridge in chat_stream_handler.
+        let step_tx = tx.clone();
+        let agent_result = task::spawn_blocking(move || -> Result<AgentOutcome> {
+            let orchestrator =
+                Arc::new(AutomationOrchestrator::from_settings(automation.clone(), bridge));
+
+            let agent_transcript_dir = transcript_root.join("agents");
+            let artifacts_dir = transcript_root.join("agent-artifacts");
+
+            let driver = if attach {
+                let port = automation.remote_debug_port;
+                let ws_url = CdpBrowser::devtools_ws_url(port, profile_dir.as_deref())
+                    .with_context(|| {
+                        format!(
+                            "could not find a debuggable Archon browser on port {port}; \
+                             launch Archon first so it exposes the CDP port, then retry \
+                             with attach"
+                        )
+                    })?;
+                CdpBrowser::connect(&ws_url, artifacts_dir)
+                    .context("failed to attach to the running Archon browser")?
+            } else {
+                CdpBrowser::launch(false, artifacts_dir)
+                    .context("failed to launch the agent browser (is Chromium installed?)")?
+            };
+
+            let agent = BrowserAgent::new(
+                orchestrator,
+                max_steps,
+                execute,
+                false,
+                Some(agent_transcript_dir),
+            )
+            .with_step_observer(Box::new(move |step| {
+                let data = serde_json::to_string(step).unwrap_or_else(|_| "{}".to_string());
+                let event = Event::default().event("step").data(data);
+                let _ = step_tx.blocking_send(Ok(event));
+            }));
+
+            let http = BlockingAiHttp::default();
+            let cancel = AtomicBool::new(false);
+            agent.run(
+                &goal,
+                start_url.as_deref(),
+                &driver,
+                provider.as_deref(),
+                &http,
+                &cancel,
+            )
+        })
+        .await;
+
+        match agent_result {
+            Ok(Ok(outcome)) => {
+                match serde_json::to_string(&outcome) {
+                    Ok(serialised) => {
+                        let outcome_event = Event::default().event("outcome").data(serialised);
+                        let _ = tx.send(Ok(outcome_event)).await;
+                    }
+                    Err(err) => {
+                        let _ = tx
+                            .send(Err(format!("failed to serialise agent outcome: {err}")))
+                            .await;
+                    }
                 }
-                current.push_str(word);
-                if current.len() >= 80 {
-                    chunks.push(current.clone());
-                    current.clear();
-                }
+
+                let finished_event = Event::default()
+                    .event("status")
+                    .data(json!({ "stage": "finished" }).to_string());
+                let _ = tx.send(Ok(finished_event)).await;
             }
-            if !current.is_empty() {
-                chunks.push(current);
+            Ok(Err(err)) => {
+                let _ = tx.send(Err(format!("{err:#}"))).await;
+            }
+            Err(join_err) => {
+                let _ = tx
+                    .send(Err(format!("worker task failed: {join_err}")))
+                    .await;
             }
         }
-        if index + 1 < segments.len() {
-            chunks.push("\n".into());
-        }
-    }
-    chunks
-        .into_iter()
-        .filter(|chunk| !chunk.is_empty())
-        .collect()
+    });
+
+    let stream = ReceiverStream::new(rx).map(|result| match result {
+        Ok(event) => Ok(event),
+        Err(message) => Ok(Event::default()
+            .event("error")
+            .data(json!({ "message": message }).to_string())),
+    });
+
+    Ok(Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("keep-alive"),
+    ))
 }
 
 async fn connectors_handler(State(state): State<AppState>) -> Json<Value> {
@@ -2611,9 +2810,30 @@ async fn arc_ask_stream_handler(
         let chat_prompt =
             AiChatPrompt::text(&augmented_prompt).with_source(TranscriptSource::ArcSearch);
 
+        // Send streaming status
+        let streaming_event = Event::default()
+            .event("status")
+            .data(json!({ "stage": "streaming", "message": "Generating response..." }).to_string());
+        if tx.send(Ok(streaming_event)).await.is_err() {
+            return;
+        }
+
+        // Stream true provider deltas onto the SSE channel as they arrive.
+        let delta_tx = tx.clone();
         let ai_response = match task::spawn_blocking(move || {
             let http = BlockingAiHttp::default();
-            bridge.chat_with_prompt(ai_provider.as_deref(), chat_prompt, &http)
+            let mut on_delta = |delta: &str| {
+                let delta_event = Event::default()
+                    .event("delta")
+                    .data(json!({ "text": delta }).to_string());
+                let _ = delta_tx.blocking_send(Ok(delta_event));
+            };
+            bridge.chat_with_prompt_streaming(
+                ai_provider.as_deref(),
+                chat_prompt,
+                &http,
+                &mut on_delta,
+            )
         })
         .await
         {
@@ -2627,26 +2847,6 @@ async fn arc_ask_stream_handler(
                 return;
             }
         };
-
-        // Send streaming status
-        let streaming_event = Event::default()
-            .event("status")
-            .data(json!({ "stage": "streaming", "message": "Generating response..." }).to_string());
-        if tx.send(Ok(streaming_event)).await.is_err() {
-            return;
-        }
-
-        // Stream the response in chunks for a typing effect
-        for chunk in chunk_response_text(&ai_response.reply) {
-            let delta_event = Event::default()
-                .event("delta")
-                .data(json!({ "text": chunk }).to_string());
-            if tx.send(Ok(delta_event)).await.is_err() {
-                return;
-            }
-            // Small delay between chunks for typing effect
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
 
         // Send complete event with full response data
         let citations_footer = archon::search::format_citations_footer(&search_result.citations);
@@ -2689,4 +2889,172 @@ async fn arc_ask_stream_handler(
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chat_request(value: serde_json::Value) -> ChatRequest {
+        serde_json::from_value(value).expect("valid chat request")
+    }
+
+    #[test]
+    fn into_prompt_attaches_page_context() {
+        let request = chat_request(json!({
+            "prompt": "what is this page about?",
+            "page_context": {
+                "url": "https://example.com",
+                "title": "Example",
+                "selected_text": "highlighted",
+                "content": "body text"
+            }
+        }));
+        let prompt = request.into_prompt().expect("prompt builds");
+        let ctx = prompt.page_context.expect("page context present");
+        assert_eq!(ctx.url.as_deref(), Some("https://example.com"));
+        assert_eq!(ctx.title.as_deref(), Some("Example"));
+        assert_eq!(ctx.selected_text.as_deref(), Some("highlighted"));
+        assert_eq!(ctx.content.as_deref(), Some("body text"));
+    }
+
+    #[test]
+    fn into_prompt_trims_and_drops_blank_page_fields() {
+        let request = chat_request(json!({
+            "prompt": "hi",
+            "page_context": {
+                "url": "  https://example.com  ",
+                "title": "   ",
+                "content": ""
+            }
+        }));
+        let prompt = request.into_prompt().expect("prompt builds");
+        let ctx = prompt.page_context.expect("page context present");
+        assert_eq!(ctx.url.as_deref(), Some("https://example.com"));
+        assert!(ctx.title.is_none());
+        assert!(ctx.selected_text.is_none());
+        assert!(ctx.content.is_none());
+    }
+
+    #[test]
+    fn into_prompt_without_page_context_has_none() {
+        let request = chat_request(json!({ "prompt": "plain message" }));
+        let prompt = request.into_prompt().expect("prompt builds");
+        assert!(prompt.page_context.is_none());
+    }
+
+    #[test]
+    fn into_prompt_drops_fully_blank_page_context() {
+        let request = chat_request(json!({
+            "prompt": "hi",
+            "page_context": { "url": "   ", "content": "" }
+        }));
+        let prompt = request.into_prompt().expect("prompt builds");
+        assert!(prompt.page_context.is_none());
+    }
+
+    #[test]
+    fn into_prompt_parses_page_segments() {
+        let request = chat_request(json!({
+            "prompt": "summarize",
+            "page_context": {
+                "content": "body",
+                "segments": [
+                    { "ref": "a1", "text": "  First region  " },
+                    { "ref": "  ", "text": "dropped: blank ref" },
+                    { "ref": "a2", "text": "   " }
+                ]
+            }
+        }));
+        let prompt = request.into_prompt().expect("prompt builds");
+        let ctx = prompt.page_context.expect("page context present");
+        assert_eq!(ctx.segments.len(), 1);
+        assert_eq!(ctx.segments[0].reference, "a1");
+        assert_eq!(ctx.segments[0].text, "First region");
+    }
+
+    #[test]
+    fn agent_run_request_parses_full_body() {
+        let request: AgentRunRequest = serde_json::from_value(json!({
+            "goal": "find the pricing page",
+            "start_url": "https://example.com",
+            "max_steps": 5,
+            "execute": true,
+            "attach": true,
+            "provider": "local-ollama"
+        }))
+        .expect("valid agent run request");
+        assert_eq!(request.goal, "find the pricing page");
+        assert_eq!(request.start_url.as_deref(), Some("https://example.com"));
+        assert_eq!(request.max_steps, Some(5));
+        assert!(request.execute);
+        assert!(request.attach);
+        assert_eq!(request.provider.as_deref(), Some("local-ollama"));
+    }
+
+    #[test]
+    fn agent_run_request_defaults_are_safe() {
+        // Only `goal` is required; execute/attach default to false (preview).
+        let request: AgentRunRequest =
+            serde_json::from_value(json!({ "goal": "summarise" })).expect("valid request");
+        assert_eq!(request.goal, "summarise");
+        assert!(request.start_url.is_none());
+        assert!(request.max_steps.is_none());
+        assert!(!request.execute);
+        assert!(!request.attach);
+        assert!(request.provider.is_none());
+    }
+
+    #[test]
+    fn agent_step_serialises_for_sse() {
+        use archon::agent::AgentStep;
+        use archon::automation::{ActionResult, WebAction};
+        use chrono::Utc;
+
+        let action = WebAction::click("#submit");
+        let result = ActionResult {
+            action_id: action.id,
+            success: true,
+            data: Some("clicked".to_string()),
+            error: None,
+            latency_ms: 12,
+            timestamp: Utc::now(),
+        };
+        let step = AgentStep {
+            index: 1,
+            observation: "a button".to_string(),
+            action,
+            result,
+        };
+        let value: Value = serde_json::from_str(
+            &serde_json::to_string(&step).expect("step serialises"),
+        )
+        .expect("valid json");
+        assert_eq!(value["index"], json!(1));
+        assert_eq!(value["result"]["success"], json!(true));
+        assert_eq!(value["action"]["selector"], json!("#submit"));
+    }
+
+    #[test]
+    fn agent_outcome_serialises_for_sse() {
+        use archon::agent::AgentOutcome;
+        use uuid::Uuid;
+
+        let outcome = AgentOutcome {
+            id: Uuid::new_v4(),
+            goal: "summarise".to_string(),
+            executed: false,
+            steps: Vec::new(),
+            completed: true,
+            summary: "done".to_string(),
+        };
+        let value: Value = serde_json::from_str(
+            &serde_json::to_string(&outcome).expect("outcome serialises"),
+        )
+        .expect("valid json");
+        assert_eq!(value["goal"], json!("summarise"));
+        assert_eq!(value["executed"], json!(false));
+        assert_eq!(value["completed"], json!(true));
+        assert_eq!(value["summary"], json!("done"));
+    }
 }

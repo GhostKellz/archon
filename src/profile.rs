@@ -133,7 +133,7 @@ impl ProfileStore {
                 path.display()
             )
         })?;
-        badges.sort_by(|a, b| b.issued_at.cmp(&a.issued_at));
+        badges.sort_by_key(|b| std::cmp::Reverse(b.issued_at));
         Ok(badges)
     }
 
@@ -145,7 +145,7 @@ impl ProfileStore {
             return Ok(());
         }
         badges.push(badge);
-        badges.sort_by(|a, b| b.issued_at.cmp(&a.issued_at));
+        badges.sort_by_key(|b| std::cmp::Reverse(b.issued_at));
 
         let path = profile.directory.join("badges.json");
         fs::create_dir_all(&profile.directory).with_context(|| {

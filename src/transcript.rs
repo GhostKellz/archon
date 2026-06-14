@@ -8,6 +8,8 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::sync_util::LockResultExt;
+
 /// Maximum length used when deriving a transcript title from the first user message.
 const DEFAULT_TITLE_LIMIT: usize = 80;
 
@@ -64,6 +66,11 @@ impl TranscriptStore {
         })
     }
 
+    /// Root directory backing this transcript store.
+    pub fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+
     /// Enumerate known transcripts ordered by most recent activity (descending).
     pub fn list(&self) -> Result<Vec<TranscriptSummary>> {
         let mut summaries = Vec::new();
@@ -102,7 +109,7 @@ impl TranscriptStore {
             }
         }
 
-        summaries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        summaries.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(summaries)
     }
 
@@ -145,7 +152,7 @@ impl TranscriptStore {
 
     /// Append a new interaction (user + assistant) to the associated transcript, creating it on demand.
     pub fn record_interaction(&self, input: &TranscriptInput) -> Result<TranscriptRecord> {
-        let _guard = self.lock.lock().expect("transcript lock poisoned");
+        let _guard = self.lock.lock().recover();
 
         let resolved_id = input.conversation_id.unwrap_or_else(Uuid::new_v4);
         let conversation_dir = self.conversation_dir(resolved_id);
@@ -204,7 +211,7 @@ impl TranscriptStore {
 
     /// Manually apply the configured retention policy.
     pub fn prune(&self) -> Result<()> {
-        let _guard = self.lock.lock().expect("transcript lock poisoned");
+        let _guard = self.lock.lock().recover();
         self.prune_locked()
     }
 
@@ -218,7 +225,7 @@ impl TranscriptStore {
             return Ok(());
         }
 
-        entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        entries.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         let mut remove: HashSet<Uuid> = HashSet::new();
 
         if let Some(max_entries) = self.retention.max_entries

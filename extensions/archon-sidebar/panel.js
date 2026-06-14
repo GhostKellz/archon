@@ -5,7 +5,10 @@ const providerSelect = document.getElementById('provider');
 const providerCapabilitySummary = document.getElementById('provider-capabilities');
 const attachmentInput = document.getElementById('attachments');
 const attachmentList = document.getElementById('attachment-list');
+const includePageToggle = document.getElementById('include-page');
+const summarizePageBtn = document.getElementById('summarize-page-btn');
 const log = document.getElementById('log');
+const followupsEl = document.getElementById('followups');
 const toolForm = document.getElementById('tool-form');
 const connectorSelect = document.getElementById('tool-connector');
 const toolNameInput = document.getElementById('tool-name');
@@ -34,6 +37,19 @@ const arcQueryInput = document.getElementById('arc-query');
 const arcAiProviderSelect = document.getElementById('arc-ai-provider');
 const arcStatus = document.getElementById('arc-status');
 const arcResults = document.getElementById('arc-results');
+
+// Agent elements
+const agentForm = document.getElementById('agent-form');
+const agentGoalInput = document.getElementById('agent-goal');
+const agentStartUrlInput = document.getElementById('agent-start-url');
+const agentMaxStepsInput = document.getElementById('agent-max-steps');
+const agentProviderSelect = document.getElementById('agent-provider');
+const agentAttachToggle = document.getElementById('agent-attach');
+const agentExecuteToggle = document.getElementById('agent-execute');
+const agentRunBtn = document.getElementById('agent-run-btn');
+const agentStatus = document.getElementById('agent-status');
+const agentStepsList = document.getElementById('agent-steps');
+const agentSummary = document.getElementById('agent-summary');
 
 // N8N elements
 const n8nStatus = document.getElementById('n8n-status');
@@ -65,11 +81,235 @@ let pendingTranscriptId = null;
 let activeConversationId = null;
 let activeConversationTitle = '';
 
+// Single source of truth for the archon-host HTTP server (see config.rs
+// AiHostSettings::default_listen_addr and manifest host_permissions).
+const HOST_API_BASE = 'http://127.0.0.1:8805';
+
 function appendMessage(kind, text) {
   const entry = document.createElement('article');
   entry.className = `log-entry ${kind}`;
   entry.textContent = text;
   log.prepend(entry);
+  if (kind === 'assistant') {
+    renderCitationChips(entry, text);
+  }
+}
+
+// Create an assistant log bubble that can be updated as streamed tokens arrive.
+function createAssistantBubble() {
+  const entry = document.createElement('article');
+  entry.className = 'log-entry assistant streaming';
+  const meta = document.createElement('div');
+  meta.className = 'log-entry-meta';
+  meta.textContent = 'Streaming…';
+  const body = document.createElement('div');
+  body.className = 'log-entry-body';
+  entry.append(meta, body);
+  log.prepend(entry);
+  return {
+    appendDelta(text) {
+      body.textContent += text;
+    },
+    finalize({ provider, model, latency_ms } = {}) {
+      entry.classList.remove('streaming');
+      const parts = [];
+      if (provider) parts.push(`Provider: ${provider}`);
+      if (model) parts.push(`Model: ${model}`);
+      if (latency_ms !== undefined) parts.push(`Latency: ${latency_ms} ms`);
+      meta.textContent = parts.join(' · ');
+      if (parts.length === 0) meta.remove();
+      renderCitationChips(entry, body.textContent);
+    },
+    text() {
+      return body.textContent;
+    },
+  };
+}
+
+// Parse [[ref]] markers in a reply and append clickable citation chips that
+// scroll the source region into view and flash a highlight on the page.
+function renderCitationChips(entry, text) {
+  const refs = [];
+  const seen = new Set();
+  const re = /\[\[([\w-]{1,64})\]\]/g;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    const ref = match[1];
+    if (!seen.has(ref)) {
+      seen.add(ref);
+      refs.push(ref);
+    }
+  }
+  if (refs.length === 0) return;
+
+  const row = document.createElement('div');
+  row.className = 'citation-chips';
+  refs.forEach((ref, index) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'citation-chip';
+    chip.textContent = `[${index + 1}] ${ref}`;
+    chip.title = `Jump to cited region ${ref}`;
+    chip.addEventListener('click', () => jumpToCitation(ref));
+    row.append(chip);
+  });
+  entry.append(row);
+}
+
+// Suggest up to 3 heuristic follow-up prompts for the latest reply. Clicking a
+// chip prefills the composer (preserving the active conversation thread).
+function suggestFollowUps(reply) {
+  const text = (reply || '').toLowerCase();
+  const suggestions = [];
+  if (/```|function |const |class |def |import /.test(text)) {
+    suggestions.push('Explain this code step by step');
+  }
+  if (reply && reply.length > 600) {
+    suggestions.push('Summarize the key points');
+  }
+  suggestions.push('Can you go into more detail?');
+  suggestions.push('Give a concrete example');
+  // De-duplicate and cap at 3.
+  return [...new Set(suggestions)].slice(0, 3);
+}
+
+function renderFollowUpChips(reply) {
+  if (!followupsEl) return;
+  followupsEl.innerHTML = '';
+  const suggestions = suggestFollowUps(reply);
+  if (suggestions.length === 0) {
+    followupsEl.hidden = true;
+    return;
+  }
+  suggestions.forEach((suggestion) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'followup-chip';
+    chip.textContent = suggestion;
+    chip.addEventListener('click', () => {
+      if (textarea) {
+        textarea.value = suggestion;
+        textarea.focus();
+      }
+      followupsEl.hidden = true;
+    });
+    followupsEl.append(chip);
+  });
+  followupsEl.hidden = false;
+}
+
+// Inject a small function into the active tab that finds the cited element by
+// id or data-archon-cite handle, scrolls it into view, and flashes a highlight.
+async function jumpToCitation(ref) {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) return;
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: (handle) => {
+        const escaped = (window.CSS && CSS.escape) ? CSS.escape(handle) : handle;
+        const el =
+          document.getElementById(handle) ||
+          document.querySelector(`[data-archon-cite="${escaped}"]`);
+        if (!el) return false;
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const previous = el.style.transition;
+        const previousBg = el.style.backgroundColor;
+        el.style.transition = 'background-color 0.4s ease';
+        el.style.backgroundColor = 'rgba(127, 90, 240, 0.45)';
+        setTimeout(() => {
+          el.style.backgroundColor = previousBg;
+          setTimeout(() => {
+            el.style.transition = previous;
+          }, 400);
+        }, 900);
+        return true;
+      },
+      args: [ref],
+    });
+  } catch (error) {
+    console.warn('Citation jump failed:', error);
+  }
+}
+
+// POST to the archon-host /chat/stream SSE endpoint and render deltas live.
+// Returns true on success; false if the host was unreachable (so the caller
+// can fall back to the one-shot native-messaging path).
+async function streamChat(payload) {
+  let response;
+  try {
+    response = await fetch(`${HOST_API_BASE}/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    console.warn('chat stream unreachable, will fall back:', err);
+    return false;
+  }
+  if (!response.ok || !response.body) {
+    console.warn('chat stream returned', response.status);
+    return false;
+  }
+
+  const bubble = createAssistantBubble();
+  setStatus('Streaming response…', 'pending');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let currentEvent = 'message';
+
+  const dispatch = (eventType, data) => {
+    let parsed;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      return; // keep-alive or non-JSON line
+    }
+    switch (eventType) {
+      case 'delta':
+        if (typeof parsed.text === 'string') bubble.appendDelta(parsed.text);
+        break;
+      case 'complete':
+        bubble.finalize(parsed);
+        if (parsed.transcript && parsed.transcript.id) {
+          setActiveConversation(parsed.transcript.id, formatTranscriptTitle(parsed.transcript));
+          upsertTranscriptSummary(parsed.transcript);
+        } else if (parsed.conversation_id) {
+          setActiveConversation(parsed.conversation_id, activeConversationTitle);
+        }
+        renderFollowUpChips(parsed.reply || bubble.text());
+        requestMetrics();
+        requestTranscripts();
+        setStatus('Response received', 'ok');
+        break;
+      case 'error':
+        appendMessage('error', parsed.message || 'Streaming error');
+        setStatus(parsed.message || 'Streaming error', 'error');
+        break;
+      default:
+        break;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (line.startsWith('event:')) {
+        currentEvent = line.slice(6).trim();
+      } else if (line.startsWith('data:')) {
+        const data = line.slice(5).trim();
+        if (data) dispatch(currentEvent, data);
+      } else if (line.trim() === '') {
+        currentEvent = 'message';
+      }
+    }
+  }
+  return true;
 }
 
 function setStatus(text, tone = 'neutral') {
@@ -835,6 +1075,7 @@ function connectNative() {
         setActiveConversation(transcript.id, formatTranscriptTitle(transcript));
         upsertTranscriptSummary(transcript);
       }
+      renderFollowUpChips(reply);
       requestMetrics();
       requestTranscripts();
       setStatus('Response received', 'ok');
@@ -910,21 +1151,115 @@ if (attachmentInput) {
   });
 }
 
-form.addEventListener('submit', (event) => {
-  event.preventDefault();
-  const promptRaw = textarea.value;
-  const prompt = promptRaw.trim();
-  const provider = providerSelect.value.trim();
+// Maximum number of characters of extracted page text sent to the host. The
+// native host bounds this again before forwarding to a provider.
+const MAX_PAGE_CONTENT_CHARS = 12000;
+const MAX_PAGE_SELECTION_CHARS = 4000;
+const MAX_PAGE_SEGMENTS = 40;
+const MAX_SEGMENT_CHARS = 600;
+
+// Capture a snapshot of the active tab (title, URL, selection, main text) via
+// activeTab + scripting. Returns null when no page can be read (e.g. the active
+// tab is a restricted chrome:// page or capture fails).
+async function capturePageContext() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id) {
+      return null;
+    }
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: (maxContent, maxSelection, maxSegments, maxSegmentChars) => {
+        const article = document.querySelector(
+          'article, main, [role="main"], .content, #content'
+        );
+        const target = article || document.body;
+        const content = (target?.innerText || '')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, maxContent);
+        const selection = (window.getSelection?.().toString() || '')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, maxSelection);
+
+        // Anchored pass: walk block-level elements and assign each a stable
+        // handle (existing id, else a generated data-archon-cite token set on
+        // the live DOM) so the model can cite regions as [[ref]].
+        const segments = [];
+        let counter = 0;
+        const blocks = target.querySelectorAll(
+          'p, li, h1, h2, h3, h4, h5, h6, blockquote, pre, td, dd, figcaption'
+        );
+        for (const el of blocks) {
+          if (segments.length >= maxSegments) break;
+          const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+          if (text.length < 40) continue;
+          let ref = el.id && /^[\w-]+$/.test(el.id) ? el.id : null;
+          if (!ref) {
+            ref = el.getAttribute('data-archon-cite');
+          }
+          if (!ref) {
+            counter += 1;
+            ref = `a${counter}`;
+            el.setAttribute('data-archon-cite', ref);
+          }
+          segments.push({ ref, text: text.slice(0, maxSegmentChars) });
+        }
+
+        return {
+          url: window.location.href,
+          title: document.title,
+          selected_text: selection || undefined,
+          content: content || undefined,
+          segments: segments.length ? segments : undefined,
+        };
+      },
+      args: [
+        MAX_PAGE_CONTENT_CHARS,
+        MAX_PAGE_SELECTION_CHARS,
+        MAX_PAGE_SEGMENTS,
+        MAX_SEGMENT_CHARS,
+      ],
+    });
+    const data = results?.[0]?.result;
+    if (!data || (!data.content && !data.selected_text && !data.title && !data.url)) {
+      return null;
+    }
+    return data;
+  } catch (error) {
+    console.error('Page capture failed:', error);
+    return null;
+  }
+}
+
+async function sendChat(promptRaw, { provider, includePage } = {}) {
   if (!port) {
     return;
   }
+  const prompt = promptRaw.trim();
   if (!prompt && attachments.length === 0) {
     appendMessage('error', 'Provide a prompt or attach a file before sending.');
     return;
   }
+
+  if (followupsEl) followupsEl.hidden = true;
+
+  let pageContext = null;
+  if (includePage) {
+    setStatus('Reading current page…', 'pending');
+    pageContext = await capturePageContext();
+    if (!pageContext) {
+      appendMessage('error', 'Could not read the current page (it may be a restricted page).');
+    }
+  }
+
   const summaryParts = [];
   if (prompt) {
     summaryParts.push(prompt);
+  }
+  if (pageContext) {
+    summaryParts.push(`📄 Page context: ${pageContext.title || pageContext.url || 'current page'}`);
   }
   if (attachments.length > 0) {
     const descriptor = attachments
@@ -934,6 +1269,7 @@ form.addEventListener('submit', (event) => {
   }
   appendMessage('user', summaryParts.join('\n\n'));
   setStatus('Waiting for response…', 'pending');
+
   const payload = {
     prompt: promptRaw,
     provider: provider || undefined,
@@ -948,10 +1284,38 @@ form.addEventListener('submit', (event) => {
       data: item.data,
     }));
   }
-  port.postMessage(payload);
-  textarea.value = '';
+  if (pageContext) {
+    payload.page_context = pageContext;
+  }
+
+  // Prefer the HTTP SSE path for true token streaming; fall back to the
+  // one-shot native-messaging bridge when the host is unreachable.
   clearAttachments();
+  const streamed = await streamChat(payload);
+  if (!streamed) {
+    setStatus('Streaming unavailable, using native host…', 'warn');
+    port.postMessage(payload);
+  }
+}
+
+form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const promptRaw = textarea.value;
+  const provider = providerSelect.value.trim();
+  const includePage = Boolean(includePageToggle?.checked);
+  await sendChat(promptRaw, { provider, includePage });
+  textarea.value = '';
 });
+
+if (summarizePageBtn) {
+  summarizePageBtn.addEventListener('click', async () => {
+    const provider = providerSelect.value.trim();
+    await sendChat('Summarize this page concisely, highlighting the key points.', {
+      provider,
+      includePage: true,
+    });
+  });
+}
 
 document.addEventListener('DOMContentLoaded', () => {
   renderProviderOptions('');
@@ -1005,6 +1369,7 @@ function handleProvidersResponse(message) {
   const defaultProvider = typeof payload?.default === 'string' ? payload.default : '';
   renderProviderOptions(defaultProvider);
   renderArcProviderOptions();
+  renderAgentProviderOptions();
 
   if (Array.isArray(payload?.metrics)) {
     updateMetricsSnapshot(payload.metrics);
@@ -1357,6 +1722,191 @@ tabButtons.forEach((btn) => {
 });
 
 // ============================================================================
+// Agent (autonomous browsing)
+// ============================================================================
+
+let agentRunning = false;
+
+function renderAgentProviderOptions() {
+  if (!agentProviderSelect) return;
+  const selected = agentProviderSelect.value;
+  agentProviderSelect.innerHTML = '';
+  const defaultOption = document.createElement('option');
+  defaultOption.value = '';
+  defaultOption.textContent = 'Default provider';
+  agentProviderSelect.append(defaultOption);
+  providerCache.forEach((entry) => {
+    if (!entry.enabled) return;
+    const option = document.createElement('option');
+    option.value = entry.name;
+    option.textContent = entry.label ?? entry.name;
+    agentProviderSelect.append(option);
+  });
+  if (selected && providerCache.some((entry) => entry.name === selected)) {
+    agentProviderSelect.value = selected;
+  }
+}
+
+function setAgentStatus(text, tone = 'pending') {
+  if (!agentStatus) return;
+  agentStatus.textContent = text;
+  agentStatus.dataset.tone = tone;
+  agentStatus.hidden = !text;
+}
+
+function renderAgentStep(step) {
+  if (!agentStepsList) return;
+  const item = document.createElement('li');
+  const ok = step?.result?.success;
+  item.className = `agent-step ${ok ? 'ok' : 'failed'}`;
+
+  const head = document.createElement('div');
+  head.className = 'agent-step-head';
+  const action = step?.action ?? {};
+  const actionType = action.action_type ?? 'action';
+  const target = action.selector || action.value || '';
+  head.textContent = `${step.index}. ${actionType}${target ? ` · ${target}` : ''}`;
+
+  const badge = document.createElement('span');
+  badge.className = `agent-step-badge ${ok ? 'ok' : 'failed'}`;
+  badge.textContent = ok ? 'ok' : 'failed';
+  head.append(badge);
+  item.append(head);
+
+  const detail = step?.result?.data || step?.result?.error;
+  if (detail) {
+    const body = document.createElement('div');
+    body.className = 'agent-step-detail';
+    body.textContent = detail;
+    item.append(body);
+  }
+  agentStepsList.append(item);
+}
+
+function renderAgentOutcome(outcome) {
+  if (!agentSummary) return;
+  agentSummary.innerHTML = '';
+  const heading = document.createElement('strong');
+  heading.textContent = outcome.completed ? 'Completed' : 'Ended';
+  const text = document.createElement('p');
+  text.textContent = outcome.summary || '(no summary)';
+  agentSummary.append(heading, text);
+  agentSummary.hidden = false;
+}
+
+async function runAgent(payload) {
+  let response;
+  try {
+    response = await fetch(`${HOST_API_BASE}/agent/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    setAgentStatus('Agent host unreachable. Is archon-host running?', 'error');
+    return;
+  }
+  if (!response.ok || !response.body) {
+    let message = `Agent request failed (${response.status})`;
+    try {
+      const data = await response.json();
+      if (data?.error) message = data.error;
+    } catch {
+      // non-JSON body
+    }
+    setAgentStatus(message, 'error');
+    return;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let currentEvent = 'message';
+
+  const dispatch = (eventType, data) => {
+    let parsed;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      return;
+    }
+    switch (eventType) {
+      case 'status':
+        if (parsed.stage === 'started') {
+          setAgentStatus(parsed.execute ? 'Running (live actions)…' : 'Running preview…', 'pending');
+        } else if (parsed.stage === 'finished') {
+          setAgentStatus('Agent finished', 'ok');
+        }
+        break;
+      case 'step':
+        renderAgentStep(parsed);
+        break;
+      case 'outcome':
+        renderAgentOutcome(parsed);
+        break;
+      case 'error':
+        setAgentStatus(parsed.message || 'Agent error', 'error');
+        break;
+      default:
+        break;
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (line.startsWith('event:')) {
+        currentEvent = line.slice(6).trim();
+      } else if (line.startsWith('data:')) {
+        const payloadLine = line.slice(5).trim();
+        if (payloadLine) dispatch(currentEvent, payloadLine);
+      } else if (line.trim() === '') {
+        currentEvent = 'message';
+      }
+    }
+  }
+}
+
+if (agentForm) {
+  agentForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (agentRunning) return;
+    const goal = agentGoalInput?.value.trim();
+    if (!goal) {
+      setAgentStatus('Enter a goal first', 'error');
+      return;
+    }
+
+    const payload = { goal };
+    const startUrl = agentStartUrlInput?.value.trim();
+    if (startUrl) payload.start_url = startUrl;
+    const maxSteps = parseInt(agentMaxStepsInput?.value, 10);
+    if (Number.isFinite(maxSteps)) payload.max_steps = maxSteps;
+    if (agentAttachToggle?.checked) payload.attach = true;
+    if (agentExecuteToggle?.checked) payload.execute = true;
+    const provider = agentProviderSelect?.value;
+    if (provider) payload.provider = provider;
+
+    agentRunning = true;
+    if (agentRunBtn) agentRunBtn.disabled = true;
+    if (agentStepsList) agentStepsList.innerHTML = '';
+    if (agentSummary) agentSummary.hidden = true;
+    setAgentStatus('Starting agent…', 'pending');
+
+    try {
+      await runAgent(payload);
+    } finally {
+      agentRunning = false;
+      if (agentRunBtn) agentRunBtn.disabled = false;
+    }
+  });
+}
+
+// ============================================================================
 // Arc Search (Perplexity-like)
 // ============================================================================
 
@@ -1633,7 +2183,7 @@ loadSavedTheme();
 // =============================================================================
 // N8N Workflow Integration
 // =============================================================================
-const N8N_API_BASE = 'http://127.0.0.1:7700';
+const N8N_API_BASE = HOST_API_BASE;
 let n8nWorkflowCache = [];
 let n8nPendingExecution = false;
 
@@ -2019,7 +2569,7 @@ tabButtons.forEach(btn => {
 });
 
 // Arc Search - use HTTP streaming (SSE) for better UX
-const ARC_API_BASE = 'http://127.0.0.1:7700';
+const ARC_API_BASE = HOST_API_BASE;
 let arcEventSource = null;
 let arcStreamingAnswer = '';
 let arcStreamingCard = null;

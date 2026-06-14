@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use url::Url;
 
 use crate::config::{AiProviderCapabilities, AiProviderConfig, AiProviderKind, AiSettings};
+use crate::sync_util::LockResultExt;
 use crate::transcript::{
     AttachmentInput, TranscriptInput, TranscriptRole, TranscriptSource, TranscriptStore,
     TranscriptSummary,
@@ -150,32 +151,93 @@ impl AiBridge {
 
         self.ensure_capabilities(config, &prompt)?;
 
+        let response_result = self.dispatch_chat(config, &prompt, http);
+        self.finalize_response(config, &prompt, response_result)
+    }
+
+    /// Provider-agnostic streaming chat. Emits incremental reply text to `on_delta` as it
+    /// arrives (true token streaming for Ollama; a single delta for other providers) and
+    /// returns the fully accumulated [`AiChatResponse`] with transcript metadata set.
+    pub fn chat_with_prompt_streaming<T: AiHttp>(
+        &self,
+        provider: Option<&str>,
+        prompt: AiChatPrompt,
+        http: &T,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<AiChatResponse> {
+        let provider_name = provider.unwrap_or(&self.default_provider);
+        let config = self
+            .providers
+            .iter()
+            .find(|candidate| candidate.name == provider_name)
+            .with_context(|| format!("AI provider '{provider_name}' not configured"))?;
+
+        if !config.enabled {
+            bail!("AI provider '{provider_name}' is disabled in configuration");
+        }
+
+        self.ensure_capabilities(config, &prompt)?;
+
         let response_result = match config.kind {
-            AiProviderKind::LocalOllama => self.chat_with_ollama(config, &prompt, http),
+            AiProviderKind::LocalOllama => {
+                self.chat_with_ollama_streaming(config, &prompt, http, on_delta)
+            }
+            // Other providers do not stream incrementally yet: fetch the full reply and
+            // surface it as a single delta so the SSE/UI path is uniform.
+            _ => {
+                let result = self.dispatch_chat(config, &prompt, http);
+                if let Ok(ref response) = result {
+                    on_delta(&response.reply);
+                }
+                result
+            }
+        };
+
+        self.finalize_response(config, &prompt, response_result)
+    }
+
+    /// Dispatch a (non-streaming) chat request to the configured provider.
+    fn dispatch_chat<T: AiHttp>(
+        &self,
+        config: &AiProviderConfig,
+        prompt: &AiChatPrompt,
+        http: &T,
+    ) -> Result<AiChatResponse> {
+        match config.kind {
+            AiProviderKind::LocalOllama => self.chat_with_ollama(config, prompt, http),
             // LiteLLM, OpenRouter, Groq, Together all use OpenAI-compatible API
             AiProviderKind::LiteLlm
             | AiProviderKind::OpenRouter
             | AiProviderKind::Groq
-            | AiProviderKind::Together => self.chat_with_openai_compatible(config, &prompt, http),
-            AiProviderKind::OpenAi => self.chat_with_openai(config, &prompt, http),
-            AiProviderKind::Claude => self.chat_with_claude(config, &prompt, http),
-            AiProviderKind::Gemini => self.chat_with_gemini(config, &prompt, http),
-            AiProviderKind::Xai => self.chat_with_xai(config, &prompt, http),
-            AiProviderKind::Perplexity => self.chat_with_perplexity(config, &prompt, http),
-        };
+            | AiProviderKind::Together => self.chat_with_openai_compatible(config, prompt, http),
+            AiProviderKind::OpenAi => self.chat_with_openai(config, prompt, http),
+            AiProviderKind::Claude => self.chat_with_claude(config, prompt, http),
+            AiProviderKind::Gemini => self.chat_with_gemini(config, prompt, http),
+            AiProviderKind::Xai => self.chat_with_xai(config, prompt, http),
+            AiProviderKind::Perplexity => self.chat_with_perplexity(config, prompt, http),
+        }
+    }
 
+    /// Record metrics/telemetry/transcript for a completed chat and attach transcript
+    /// metadata. Shared by the blocking and streaming entry points.
+    fn finalize_response(
+        &self,
+        config: &AiProviderConfig,
+        prompt: &AiChatPrompt,
+        response_result: Result<AiChatResponse>,
+    ) -> Result<AiChatResponse> {
         let mut response = match response_result {
             Ok(value) => value,
             Err(err) => {
                 self.metrics.record_error(&config.name, &err);
-                self.record_telemetry_error(&config.name, &prompt, &err);
+                self.record_telemetry_error(&config.name, prompt, &err);
                 return Err(err);
             }
         };
 
         self.metrics
-            .record_success(&config.name, &prompt, response.latency_ms);
-        self.record_telemetry_success(&config.name, &prompt, response.latency_ms);
+            .record_success(&config.name, prompt, response.latency_ms);
+        self.record_telemetry_success(&config.name, prompt, response.latency_ms);
 
         let attachment_inputs = prompt
             .attachments
@@ -209,14 +271,91 @@ impl AiBridge {
         prompt: &AiChatPrompt,
         http: &T,
     ) -> Result<AiChatResponse> {
+        let (chat_url, model, messages) = self.prepare_ollama_request(config, prompt, http)?;
+        let payload = json!({
+            "model": model,
+            "messages": messages,
+            "stream": false,
+        });
+
+        let started = Instant::now();
+        let response = http.post_json(&chat_url, &[], &payload)?;
+        let elapsed = started.elapsed();
+        let parsed: OllamaChatResponse = serde_json::from_value(response)
+            .with_context(|| "Malformed response from Ollama chat endpoint".to_string())?;
+        let reply = parsed
+            .message
+            .map(|message| message.content)
+            .unwrap_or_default();
+
+        Ok(AiChatResponse {
+            provider: config.name.clone(),
+            model: parsed.model.unwrap_or_else(|| model.clone()),
+            reply,
+            latency_ms: elapsed.as_millis() as u64,
+            conversation_id: None,
+            transcript: None,
+        })
+    }
+
+    fn chat_with_ollama_streaming<T: AiHttp>(
+        &self,
+        config: &AiProviderConfig,
+        prompt: &AiChatPrompt,
+        http: &T,
+        on_delta: &mut dyn FnMut(&str),
+    ) -> Result<AiChatResponse> {
+        let (chat_url, model, messages) = self.prepare_ollama_request(config, prompt, http)?;
+        let payload = json!({
+            "model": model,
+            "messages": messages,
+            "stream": true,
+        });
+
+        let started = Instant::now();
+        let mut reply = String::new();
+        let mut resolved_model: Option<String> = None;
+        http.post_stream(&chat_url, &[], &payload, &mut |line: &[u8]| {
+            let chunk: OllamaStreamChunk = serde_json::from_slice(line)
+                .context("Malformed NDJSON chunk from Ollama chat endpoint")?;
+            if let Some(message) = chunk.message
+                && !message.content.is_empty()
+            {
+                on_delta(&message.content);
+                reply.push_str(&message.content);
+            }
+            if chunk.model.is_some() {
+                resolved_model = chunk.model;
+            }
+            Ok(())
+        })?;
+        let elapsed = started.elapsed();
+
+        Ok(AiChatResponse {
+            provider: config.name.clone(),
+            model: resolved_model.unwrap_or(model),
+            reply,
+            latency_ms: elapsed.as_millis() as u64,
+            conversation_id: None,
+            transcript: None,
+        })
+    }
+
+    /// Resolve the Ollama chat URL, model, and message list shared by the blocking and
+    /// streaming paths. Also verifies the endpoint is reachable.
+    fn prepare_ollama_request<T: AiHttp>(
+        &self,
+        config: &AiProviderConfig,
+        prompt: &AiChatPrompt,
+        http: &T,
+    ) -> Result<(String, String, Vec<Value>)> {
         let base = config.endpoint.trim_end_matches('/');
         let version_url = join_endpoint(base, "api/version");
         let chat_url = join_endpoint(base, "api/chat");
-        let empty_headers = Vec::new();
 
         // Ensure Ollama is reachable and report a descriptive error if not.
         let _ = http
-            .get_json(&version_url, &empty_headers)
+            .get_json(&version_url, &[])
             .with_context(|| format!("Failed to reach Ollama endpoint at {}", version_url))?;
 
         let model = config
@@ -224,10 +363,11 @@ impl AiBridge {
             .clone()
             .unwrap_or_else(|| "llama3.1:latest".into());
 
+        let system_prompt = prompt.system_prompt();
         let mut messages = Vec::new();
         messages.push(json!({
             "role": "system",
-            "content": SYSTEM_PROMPT,
+            "content": system_prompt,
         }));
         for entry in &prompt.history {
             messages.push(json!({
@@ -258,30 +398,7 @@ impl AiBridge {
         }
         messages.push(user_message);
 
-        let payload = json!({
-            "model": model,
-            "messages": messages,
-            "stream": false,
-        });
-
-        let started = Instant::now();
-        let response = http.post_json(&chat_url, &empty_headers, &payload)?;
-        let elapsed = started.elapsed();
-        let parsed: OllamaChatResponse = serde_json::from_value(response)
-            .with_context(|| "Malformed response from Ollama chat endpoint".to_string())?;
-        let reply = parsed
-            .message
-            .map(|message| message.content)
-            .unwrap_or_default();
-
-        Ok(AiChatResponse {
-            provider: config.name.clone(),
-            model: parsed.model.unwrap_or_else(|| model.clone()),
-            reply,
-            latency_ms: elapsed.as_millis() as u64,
-            conversation_id: None,
-            transcript: None,
-        })
+        Ok((chat_url, model, messages))
     }
 
     fn chat_with_openai<T: AiHttp>(
@@ -341,10 +458,11 @@ impl AiBridge {
         if user_content.is_empty() {
             bail!("prompt must include text or attachments");
         }
+        let system_prompt = prompt.system_prompt();
         let mut messages = Vec::new();
         messages.push(json!({
             "role": "system",
-            "content": [{"type": "text", "text": SYSTEM_PROMPT}]
+            "content": [{"type": "text", "text": system_prompt}]
         }));
         for entry in &prompt.history {
             messages.push(json!({
@@ -459,10 +577,11 @@ impl AiBridge {
             bail!("prompt must include text or attachments");
         }
 
+        let system_prompt = prompt.system_prompt();
         let mut messages = Vec::new();
         messages.push(json!({
             "role": "system",
-            "content": SYSTEM_PROMPT
+            "content": system_prompt
         }));
 
         for entry in &prompt.history {
@@ -577,7 +696,7 @@ impl AiBridge {
 
         let payload = json!({
             "model": model,
-            "system": SYSTEM_PROMPT,
+            "system": prompt.system_prompt(),
             "temperature": temperature,
             "max_tokens": 1024,
             "messages": messages
@@ -640,7 +759,7 @@ impl AiBridge {
         }
 
         let mut parts = Vec::new();
-        parts.push(json!({"text": SYSTEM_PROMPT}));
+        parts.push(json!({"text": prompt.system_prompt()}));
         if !prompt.text.is_empty() {
             parts.push(json!({"text": prompt.text.clone()}));
         }
@@ -722,7 +841,7 @@ impl AiBridge {
         }
 
         let mut messages = Vec::new();
-        messages.push(json!({"role": "system", "content": SYSTEM_PROMPT}));
+        messages.push(json!({"role": "system", "content": prompt.system_prompt()}));
         for entry in &prompt.history {
             messages.push(json!({
                 "role": entry.role.as_api_role(),
@@ -785,7 +904,7 @@ impl AiBridge {
         }
 
         let mut messages = Vec::new();
-        messages.push(json!({"role": "system", "content": SYSTEM_PROMPT}));
+        messages.push(json!({"role": "system", "content": prompt.system_prompt()}));
         for entry in &prompt.history {
             messages.push(json!({
                 "role": entry.role.as_api_role(),
@@ -886,7 +1005,7 @@ struct AiProviderMetrics {
 
 impl AiProviderMetrics {
     fn snapshot(&self) -> Vec<ProviderMetricsEntry> {
-        let guard = self.inner.lock().expect("provider metrics lock poisoned");
+        let guard = self.inner.lock().recover();
         let mut entries = guard
             .iter()
             .map(|(provider, metrics)| ProviderMetricsEntry::from_pair(provider, metrics))
@@ -896,7 +1015,7 @@ impl AiProviderMetrics {
     }
 
     fn record_success(&self, provider: &str, prompt: &AiChatPrompt, latency_ms: u64) {
-        let mut guard = self.inner.lock().expect("provider metrics lock poisoned");
+        let mut guard = self.inner.lock().recover();
         let metrics = guard.entry(provider.to_owned()).or_default();
         metrics.total_requests = metrics.total_requests.saturating_add(1);
         metrics.success_count = metrics.success_count.saturating_add(1);
@@ -908,7 +1027,7 @@ impl AiProviderMetrics {
     }
 
     fn record_error(&self, provider: &str, error: &anyhow::Error) {
-        let mut guard = self.inner.lock().expect("provider metrics lock poisoned");
+        let mut guard = self.inner.lock().recover();
         let metrics = guard.entry(provider.to_owned()).or_default();
         metrics.total_requests = metrics.total_requests.saturating_add(1);
         metrics.error_count = metrics.error_count.saturating_add(1);
@@ -937,11 +1056,7 @@ pub struct ProviderMetricsEntry {
 
 impl ProviderMetricsEntry {
     fn from_pair(provider: &str, metrics: &ProviderMetricsInternal) -> Self {
-        let average_latency_ms = if metrics.success_count > 0 {
-            Some(metrics.total_latency_ms / metrics.success_count)
-        } else {
-            None
-        };
+        let average_latency_ms = metrics.total_latency_ms.checked_div(metrics.success_count);
         Self {
             provider: provider.to_owned(),
             total_requests: metrics.total_requests,
@@ -1088,6 +1203,107 @@ pub struct AiChatHistoryEntry {
     pub content: String,
 }
 
+/// Maximum number of characters of extracted page content forwarded to a model.
+///
+/// Bounds the size of the injected system-prompt block so a large page cannot
+/// blow up the request or the provider's context window.
+const MAX_PAGE_CONTENT_CHARS: usize = 8_000;
+/// Maximum number of characters of selected text forwarded to a model.
+const MAX_PAGE_SELECTION_CHARS: usize = 2_000;
+/// Maximum number of anchored page segments forwarded for citation.
+const MAX_PAGE_SEGMENTS: usize = 40;
+/// Maximum number of characters rendered per cited segment.
+const MAX_SEGMENT_CHARS: usize = 600;
+
+/// Snapshot of the web page the user is currently viewing.
+///
+/// Captured on demand by the sidebar (via `activeTab`) and attached to a chat
+/// prompt so the model can answer questions about the page being viewed.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PageContext {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// Anchored page regions the model can cite inline as `[[ref]]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub segments: Vec<PageSegment>,
+}
+
+/// An anchored region of the page the model can cite by stable handle.
+///
+/// `reference` is the element `id` (or a generated `data-archon-cite` token the
+/// sidebar set on the live DOM); the sidebar uses it to scroll/highlight when a
+/// `[[ref]]` citation chip is clicked.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PageSegment {
+    #[serde(rename = "ref")]
+    pub reference: String,
+    pub text: String,
+}
+
+impl PageContext {
+    /// Returns true when no field carries usable information.
+    fn is_empty(&self) -> bool {
+        let blank = |value: &Option<String>| value.as_deref().map(str::trim).unwrap_or("").is_empty();
+        blank(&self.url)
+            && blank(&self.title)
+            && blank(&self.selected_text)
+            && blank(&self.content)
+            && self.segments.iter().all(|s| s.text.trim().is_empty())
+    }
+
+    /// Render the context as a bounded, human-readable block for the system prompt.
+    fn render_block(&self) -> String {
+        let mut block = String::from(
+            "\n\nThe user is currently viewing a web page. Use the following context to answer \
+             questions about it. If the answer is not in the page, say so.",
+        );
+        if let Some(title) = non_blank(&self.title) {
+            block.push_str("\nTitle: ");
+            block.push_str(title);
+        }
+        if let Some(url) = non_blank(&self.url) {
+            block.push_str("\nURL: ");
+            block.push_str(url);
+        }
+        if let Some(selection) = non_blank(&self.selected_text) {
+            block.push_str("\nSelected text: ");
+            block.push_str(&truncate_chars(selection, MAX_PAGE_SELECTION_CHARS));
+        }
+        if let Some(content) = non_blank(&self.content) {
+            block.push_str("\nPage content:\n");
+            block.push_str(&truncate_chars(content, MAX_PAGE_CONTENT_CHARS));
+        }
+        let segments: Vec<&PageSegment> = self
+            .segments
+            .iter()
+            .filter(|s| !s.reference.trim().is_empty() && !s.text.trim().is_empty())
+            .take(MAX_PAGE_SEGMENTS)
+            .collect();
+        if !segments.is_empty() {
+            block.push_str(
+                "\n\nCited regions of the page are listed below, each tagged with a handle. \
+                 When a statement is supported by one of these regions, cite it inline using \
+                 its handle in double square brackets, e.g. [[a1]]. Only cite handles that \
+                 appear in this list.\n",
+            );
+            for segment in segments {
+                block.push_str(&format!(
+                    "[[{}]] {}\n",
+                    segment.reference.trim(),
+                    truncate_chars(segment.text.trim(), MAX_SEGMENT_CHARS)
+                ));
+            }
+        }
+        block
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AiChatPrompt {
     pub text: String,
@@ -1095,6 +1311,7 @@ pub struct AiChatPrompt {
     pub history: Vec<AiChatHistoryEntry>,
     pub conversation_id: Option<Uuid>,
     pub source: TranscriptSource,
+    pub page_context: Option<PageContext>,
 }
 
 impl AiChatPrompt {
@@ -1105,6 +1322,7 @@ impl AiChatPrompt {
             history: Vec::new(),
             conversation_id: None,
             source: TranscriptSource::Unknown,
+            page_context: None,
         }
     }
 
@@ -1115,6 +1333,7 @@ impl AiChatPrompt {
             history: Vec::new(),
             conversation_id: None,
             source: TranscriptSource::Unknown,
+            page_context: None,
         }
     }
 
@@ -1138,6 +1357,38 @@ impl AiChatPrompt {
         self.source = source;
         self
     }
+
+    pub fn with_page_context(mut self, page_context: Option<PageContext>) -> Self {
+        self.page_context = page_context.filter(|ctx| !ctx.is_empty());
+        self
+    }
+
+    /// Build the system prompt for this turn, appending the page-context block
+    /// when a non-empty page snapshot is attached.
+    fn system_prompt(&self) -> String {
+        match &self.page_context {
+            Some(ctx) if !ctx.is_empty() => {
+                format!("{SYSTEM_PROMPT}{}", ctx.render_block())
+            }
+            _ => SYSTEM_PROMPT.to_string(),
+        }
+    }
+}
+
+/// Return the trimmed string slice when present and non-empty.
+fn non_blank(value: &Option<String>) -> Option<&str> {
+    value.as_deref().map(str::trim).filter(|s| !s.is_empty())
+}
+
+/// Truncate to at most `max` characters on a char boundary, appending an
+/// ellipsis marker when content was dropped.
+fn truncate_chars(value: &str, max: usize) -> String {
+    if value.chars().count() <= max {
+        return value.to_string();
+    }
+    let mut out: String = value.chars().take(max).collect();
+    out.push_str("… [truncated]");
+    out
 }
 
 fn require_api_key(config: &AiProviderConfig) -> Result<String> {
@@ -1189,7 +1440,29 @@ fn build_auth_headers(
 pub trait AiHttp {
     fn get_json(&self, url: &str, headers: &[(String, String)]) -> Result<Value>;
     fn post_json(&self, url: &str, headers: &[(String, String)], body: &Value) -> Result<Value>;
+
+    /// Stream a POST response line-by-line (NDJSON). Each non-empty line is handed to
+    /// `on_line`; returning `Err` from the callback aborts the stream.
+    ///
+    /// The default implementation performs a one-shot [`AiHttp::post_json`] and yields the
+    /// serialized JSON as a single line. This keeps non-streaming providers and test stubs
+    /// working unchanged; [`BlockingAiHttp`] overrides it with real incremental streaming.
+    fn post_stream(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+        body: &Value,
+        on_line: &mut dyn FnMut(&[u8]) -> Result<()>,
+    ) -> Result<()> {
+        let value = self.post_json(url, headers, body)?;
+        let serialized = serde_json::to_vec(&value)
+            .context("failed to serialize non-streaming response for delivery")?;
+        on_line(&serialized)
+    }
 }
+
+/// Upper bound on a single streamed NDJSON line (defensive against unbounded growth).
+const MAX_STREAM_LINE: usize = 1_048_576;
 
 pub struct BlockingAiHttp {
     client: Client,
@@ -1233,6 +1506,60 @@ impl AiHttp for BlockingAiHttp {
             .json()
             .context("AI chat endpoint returned non-JSON payload")
     }
+
+    fn post_stream(
+        &self,
+        url: &str,
+        headers: &[(String, String)],
+        body: &Value,
+        on_line: &mut dyn FnMut(&[u8]) -> Result<()>,
+    ) -> Result<()> {
+        use std::io::BufRead;
+
+        let mut request = self.client.post(url).json(body);
+        request = apply_headers(request, headers)?;
+        let response = request
+            .send()
+            .with_context(|| format!("Failed to post streaming request to {url}"))?;
+        if !response.status().is_success() {
+            bail!("AI endpoint {url} returned status {}", response.status());
+        }
+
+        let mut reader = std::io::BufReader::new(response);
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            let read = reader
+                .read_until(b'\n', &mut line)
+                .with_context(|| format!("failed reading streaming response from {url}"))?;
+            if read == 0 {
+                break;
+            }
+            if line.len() > MAX_STREAM_LINE {
+                bail!("streaming line from {url} exceeded {MAX_STREAM_LINE} bytes");
+            }
+            let trimmed = trim_ascii_ws(&line);
+            if trimmed.is_empty() {
+                continue;
+            }
+            on_line(trimmed)?;
+        }
+        Ok(())
+    }
+}
+
+/// Trim leading/trailing ASCII whitespace (incl. CR/LF) from a byte slice.
+fn trim_ascii_ws(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|b| !b.is_ascii_whitespace())
+        .unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .rposition(|b| !b.is_ascii_whitespace())
+        .map(|i| i + 1)
+        .unwrap_or(start);
+    &bytes[start..end]
 }
 
 fn apply_headers(builder: RequestBuilder, headers: &[(String, String)]) -> Result<RequestBuilder> {
@@ -1274,6 +1601,14 @@ struct OllamaChatResponse {
 struct OllamaMessage {
     #[serde(default)]
     content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaStreamChunk {
+    #[serde(default)]
+    model: Option<String>,
+    #[serde(default)]
+    message: Option<OllamaMessage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1467,6 +1802,118 @@ mod tests {
     use tempfile::tempdir;
     use uuid::Uuid;
 
+    #[test]
+    fn system_prompt_without_page_context_is_the_base_prompt() {
+        let prompt = AiChatPrompt::text("hello");
+        assert_eq!(prompt.system_prompt(), SYSTEM_PROMPT);
+    }
+
+    #[test]
+    fn system_prompt_appends_page_context_block() {
+        let prompt = AiChatPrompt::text("what is this about?").with_page_context(Some(PageContext {
+            url: Some("https://example.com/article".into()),
+            title: Some("Example Article".into()),
+            selected_text: Some("a key sentence".into()),
+            content: Some("The full body of the article.".into()),
+            ..PageContext::default()
+        }));
+        let system = prompt.system_prompt();
+        assert!(system.starts_with(SYSTEM_PROMPT));
+        assert!(system.contains("Title: Example Article"));
+        assert!(system.contains("URL: https://example.com/article"));
+        assert!(system.contains("Selected text: a key sentence"));
+        assert!(system.contains("The full body of the article."));
+    }
+
+    #[test]
+    fn with_page_context_drops_empty_snapshot() {
+        let prompt = AiChatPrompt::text("hi").with_page_context(Some(PageContext {
+            url: Some("   ".into()),
+            title: None,
+            selected_text: Some(String::new()),
+            content: None,
+            ..PageContext::default()
+        }));
+        assert!(prompt.page_context.is_none());
+        assert_eq!(prompt.system_prompt(), SYSTEM_PROMPT);
+    }
+
+    #[test]
+    fn page_content_is_truncated_to_bound() {
+        // Use a marker char that does not appear in the base prompt or scaffold.
+        let oversized = "Z".repeat(MAX_PAGE_CONTENT_CHARS + 500);
+        let prompt = AiChatPrompt::text("summarize").with_page_context(Some(PageContext {
+            content: Some(oversized),
+            ..PageContext::default()
+        }));
+        let system = prompt.system_prompt();
+        assert!(system.contains("… [truncated]"));
+        // Base prompt + context scaffold + bounded content, never the full oversized body.
+        let body_chars = system.matches('Z').count();
+        assert_eq!(body_chars, MAX_PAGE_CONTENT_CHARS);
+    }
+
+    #[test]
+    fn system_prompt_renders_cited_segments() {
+        let prompt = AiChatPrompt::text("summarize").with_page_context(Some(PageContext {
+            content: Some("Body".into()),
+            segments: vec![
+                PageSegment {
+                    reference: "a1".into(),
+                    text: "First region".into(),
+                },
+                PageSegment {
+                    reference: "intro".into(),
+                    text: "Second region".into(),
+                },
+            ],
+            ..PageContext::default()
+        }));
+        let system = prompt.system_prompt();
+        assert!(system.contains("[[a1]] First region"));
+        assert!(system.contains("[[intro]] Second region"));
+        assert!(system.contains("double square brackets"));
+    }
+
+    #[test]
+    fn segments_only_context_is_not_empty() {
+        let prompt = AiChatPrompt::text("q").with_page_context(Some(PageContext {
+            segments: vec![PageSegment {
+                reference: "a1".into(),
+                text: "Only a region".into(),
+            }],
+            ..PageContext::default()
+        }));
+        assert!(prompt.page_context.is_some());
+        assert!(prompt.system_prompt().contains("[[a1]] Only a region"));
+    }
+
+    #[test]
+    fn segment_text_is_truncated_to_bound() {
+        let oversized = "Q".repeat(MAX_SEGMENT_CHARS + 200);
+        let prompt = AiChatPrompt::text("q").with_page_context(Some(PageContext {
+            segments: vec![PageSegment {
+                reference: "a1".into(),
+                text: oversized,
+            }],
+            ..PageContext::default()
+        }));
+        let system = prompt.system_prompt();
+        assert_eq!(system.matches('Q').count(), MAX_SEGMENT_CHARS);
+        assert!(system.contains("… [truncated]"));
+    }
+
+    #[test]
+    fn truncate_chars_respects_char_boundaries() {
+        // Multi-byte characters must not be split mid-codepoint.
+        let value = "héllo wörld";
+        let truncated = truncate_chars(value, 4);
+        assert!(truncated.starts_with("héll"));
+        assert!(truncated.ends_with("… [truncated]"));
+        // Shorter-than-limit input is returned unchanged.
+        assert_eq!(truncate_chars("abc", 10), "abc");
+    }
+
     #[derive(Debug, Clone)]
     struct StubCall {
         url: String,
@@ -1584,6 +2031,146 @@ mod tests {
         assert!(calls.iter().any(|call| call.url == chat));
     }
 
+    /// Stub that serves `get_json`/`post_json` from a map, but overrides `post_stream`
+    /// to emit a scripted list of NDJSON lines (one `on_line` call per entry).
+    struct StreamingStubAiHttp {
+        get_responses: RefCell<HashMap<String, Value>>,
+        stream_lines: RefCell<HashMap<String, Vec<Vec<u8>>>>,
+    }
+
+    impl StreamingStubAiHttp {
+        fn new(get: Vec<(String, Value)>, streams: Vec<(String, Vec<Vec<u8>>)>) -> Self {
+            Self {
+                get_responses: RefCell::new(get.into_iter().collect()),
+                stream_lines: RefCell::new(streams.into_iter().collect()),
+            }
+        }
+    }
+
+    impl AiHttp for StreamingStubAiHttp {
+        fn get_json(&self, url: &str, _headers: &[(String, String)]) -> Result<Value> {
+            self.get_responses
+                .borrow_mut()
+                .remove(url)
+                .with_context(|| format!("no stub for {url}"))
+        }
+
+        fn post_json(&self, url: &str, _headers: &[(String, String)], _body: &Value) -> Result<Value> {
+            bail!("post_json should not be called for streaming provider ({url})")
+        }
+
+        fn post_stream(
+            &self,
+            url: &str,
+            _headers: &[(String, String)],
+            _body: &Value,
+            on_line: &mut dyn FnMut(&[u8]) -> Result<()>,
+        ) -> Result<()> {
+            let lines = self
+                .stream_lines
+                .borrow_mut()
+                .remove(url)
+                .with_context(|| format!("no stream stub for {url}"))?;
+            for line in lines {
+                on_line(&line)?;
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn chat_streaming_ollama_emits_ordered_deltas() {
+        let settings = AiSettings::default();
+        let bridge = bridge_with_settings(&settings);
+        let default = bridge.default_provider().to_string();
+        let provider = settings
+            .providers
+            .iter()
+            .find(|p| p.name == default)
+            .unwrap();
+        let base = provider.endpoint.trim_end_matches('/');
+        let version = join_endpoint(base, "api/version");
+        let chat = join_endpoint(base, "api/chat");
+        let model = provider.default_model.clone().unwrap();
+        let lines: Vec<Vec<u8>> = vec![
+            json!({"model": model, "message": {"role": "assistant", "content": "Hel"}, "done": false}),
+            json!({"model": model, "message": {"role": "assistant", "content": "lo "}, "done": false}),
+            json!({"model": model, "message": {"role": "assistant", "content": "world"}, "done": true}),
+        ]
+        .into_iter()
+        .map(|v| serde_json::to_vec(&v).unwrap())
+        .collect();
+        let stub = StreamingStubAiHttp::new(
+            vec![(version.clone(), json!({"version": "0.1"}))],
+            vec![(chat.clone(), lines)],
+        );
+
+        let mut deltas: Vec<String> = Vec::new();
+        let response = bridge
+            .chat_with_prompt_streaming(
+                Some(&default),
+                AiChatPrompt::text("hi"),
+                &stub,
+                &mut |delta| deltas.push(delta.to_string()),
+            )
+            .expect("streaming chat should succeed");
+
+        assert_eq!(deltas, vec!["Hel", "lo ", "world"]);
+        assert_eq!(response.reply, "Hello world");
+        assert_eq!(response.provider, default);
+        assert_eq!(response.model, model);
+        // Transcript metadata is populated via the shared finalize path.
+        assert!(response.transcript.is_some());
+        assert!(response.conversation_id.is_some());
+    }
+
+    #[test]
+    fn chat_streaming_non_ollama_delivers_single_delta() {
+        let mut settings = AiSettings {
+            default_provider: "openai".into(),
+            ..AiSettings::default()
+        };
+        for provider in settings.providers.iter_mut() {
+            provider.enabled = provider.name == "openai";
+        }
+        let mut env = crate::test_util::EnvVarGuard::new();
+        env.set("OPENAI_API_KEY", "sk-example");
+
+        let bridge = bridge_with_settings(&settings);
+        let provider = settings
+            .providers
+            .iter()
+            .find(|p| p.name == "openai")
+            .unwrap();
+        let chat_path = provider.chat_path.clone().unwrap();
+        let url = join_endpoint(provider.endpoint.trim_end_matches('/'), &chat_path);
+        // Uses the default `post_stream` (post_json then one delivery).
+        let stub = StubAiHttp::new(vec![(
+            url.clone(),
+            json!({
+                "model": provider.default_model.clone().unwrap(),
+                "choices": [
+                    {"message": {"content": "hello from openai"}}
+                ]
+            }),
+        )]);
+
+        let mut deltas: Vec<String> = Vec::new();
+        let response = bridge
+            .chat_with_prompt_streaming(
+                None,
+                AiChatPrompt::text("hello"),
+                &stub,
+                &mut |delta| deltas.push(delta.to_string()),
+            )
+            .expect("streaming chat should succeed");
+
+        // Non-streaming providers surface exactly one delta = the full reply.
+        assert_eq!(deltas, vec!["hello from openai"]);
+        assert_eq!(response.reply, "hello from openai");
+        assert_eq!(response.provider, "openai");
+    }
+
     #[test]
     fn chat_with_openai_includes_bearer_token() {
         let mut settings = AiSettings {
@@ -1593,9 +2180,8 @@ mod tests {
         for provider in settings.providers.iter_mut() {
             provider.enabled = provider.name == "openai";
         }
-        unsafe {
-            std::env::set_var("OPENAI_API_KEY", "sk-example");
-        }
+        let mut env = crate::test_util::EnvVarGuard::new();
+        env.set("OPENAI_API_KEY", "sk-example");
 
         let bridge = bridge_with_settings(&settings);
         let provider = settings
@@ -1631,10 +2217,6 @@ mod tests {
                 .any(|(key, value)| key.eq_ignore_ascii_case("authorization")
                     && value == "Bearer sk-example")
         );
-
-        unsafe {
-            std::env::remove_var("OPENAI_API_KEY");
-        }
     }
 
     #[test]
@@ -1646,9 +2228,8 @@ mod tests {
         for provider in settings.providers.iter_mut() {
             provider.enabled = provider.name == "perplexity";
         }
-        unsafe {
-            std::env::set_var("PERPLEXITY_API_KEY", "ppx-example");
-        }
+        let mut env = crate::test_util::EnvVarGuard::new();
+        env.set("PERPLEXITY_API_KEY", "ppx-example");
 
         let bridge = bridge_with_settings(&settings);
         let provider = settings
@@ -1684,10 +2265,6 @@ mod tests {
                 .any(|(key, value)| key.eq_ignore_ascii_case("authorization")
                     && value == "Bearer ppx-example")
         );
-
-        unsafe {
-            std::env::remove_var("PERPLEXITY_API_KEY");
-        }
     }
 
     #[test]

@@ -27,8 +27,8 @@ Use this checklist before publishing a new Archon build or tag. Each section can
 
 ## Documentation & Communication
 
-- [ ] Update `docs/chromium_max.md` and `README.md` with any packaging changes or troubleshooting notes.
-- [ ] Review `SECURITY.md`, `docs/security.md`, and the latest `code_review.md` so accepted security tradeoffs are documented.
+- [ ] Update `docs/architecture/chromium-max.md` and `README.md` with any packaging changes or troubleshooting notes.
+- [ ] Review `SECURITY.md`, `docs/security/overview.md`, and the latest `code_review.md` so accepted security tradeoffs are documented.
 - [ ] Regenerate changelog or release notes summarising UI, packaging, and infrastructure updates.
 - [ ] Create/refresh screenshots for the curated theme pack if palettes changed.
 

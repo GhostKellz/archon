@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
 use crate::config::IpfsSettings;
+use crate::sync_util::LockResultExt;
 
 /// Cached IPNS resolution entry
 #[derive(Debug, Clone)]
@@ -59,12 +60,12 @@ impl IpfsClient {
 
         match self.client.post(&url).send().await {
             Ok(resp) if resp.status().is_success() => {
-                let mut guard = self.local_available.write().expect("lock poisoned");
+                let mut guard = self.local_available.write().recover();
                 *guard = Some(true);
                 Ok(true)
             }
             _ => {
-                let mut guard = self.local_available.write().expect("lock poisoned");
+                let mut guard = self.local_available.write().recover();
                 *guard = Some(false);
                 Ok(false)
             }
@@ -224,7 +225,7 @@ impl IpfsClient {
     pub async fn resolve_ipns(&self, name: &str) -> Result<String> {
         // Check cache first
         if self.settings.cache_ipns {
-            let cache = self.ipns_cache.read().expect("lock poisoned");
+            let cache = self.ipns_cache.read().recover();
             if let Some(entry) = cache.get(name) {
                 let ttl = Duration::from_secs(self.settings.ipns_cache_ttl_secs);
                 if entry.resolved_at.elapsed() < ttl {
@@ -261,7 +262,7 @@ impl IpfsClient {
 
         // Update cache
         if self.settings.cache_ipns {
-            let mut cache = self.ipns_cache.write().expect("lock poisoned");
+            let mut cache = self.ipns_cache.write().recover();
             cache.insert(
                 name.to_string(),
                 IpnsCacheEntry {
@@ -435,7 +436,7 @@ impl IpfsClient {
             local_node_available: local_available,
             prefer_local: self.settings.prefer_local,
             auto_pin: self.settings.auto_pin,
-            ipns_cache_size: self.ipns_cache.read().expect("lock poisoned").len(),
+            ipns_cache_size: self.ipns_cache.read().recover().len(),
         }
     }
 
@@ -450,7 +451,7 @@ impl IpfsClient {
     fn is_local_available(&self) -> bool {
         self.local_available
             .read()
-            .expect("lock poisoned")
+            .recover()
             .unwrap_or(false)
     }
 }
@@ -683,5 +684,60 @@ mod tests {
             path: Some("/index.html".into()),
         };
         assert_eq!(url.to_canonical(), "ipfs://bafytest/index.html");
+    }
+
+    #[test]
+    fn parse_url_rejects_non_ipfs_scheme() {
+        assert!(IpfsClient::parse_url("https://example.com/page").is_none());
+        assert!(IpfsClient::parse_url("not a url").is_none());
+        assert!(IpfsClient::parse_url("").is_none());
+    }
+
+    #[test]
+    fn parse_url_handles_ipns_gateway_with_nested_path() {
+        let url = IpfsClient::parse_url("https://dweb.link/ipns/example.eth/dir/page.html")
+            .expect("gateway ipns parses");
+        assert_eq!(url.protocol, IpfsProtocol::Ipns);
+        assert_eq!(url.hash, "example.eth");
+        assert_eq!(url.path.as_deref(), Some("/dir/page.html"));
+    }
+
+    #[test]
+    fn parse_url_trims_surrounding_whitespace() {
+        let url = IpfsClient::parse_url("  ipfs://bafyws  ").expect("trimmed parses");
+        assert_eq!(url.hash, "bafyws");
+    }
+
+    #[test]
+    fn to_canonical_round_trips_through_parse() {
+        let original = "ipns://k51qzi/dir/file.txt";
+        let parsed = IpfsClient::parse_url(original).unwrap();
+        assert_eq!(parsed.to_canonical(), original);
+    }
+
+    #[test]
+    fn gateway_url_uses_public_gateway_when_local_unavailable() {
+        let client = IpfsClient::from_settings(crate::config::IpfsSettings::default());
+        // prefer_local is true by default, but the local node is not probed in
+        // tests, so it must fall back to the public gateway.
+        assert_eq!(
+            client.gateway_url("bafycid"),
+            "https://ipfs.io/ipfs/bafycid"
+        );
+        assert_eq!(
+            client.ipns_gateway_url("name.eth"),
+            "https://ipfs.io/ipns/name.eth"
+        );
+    }
+
+    #[test]
+    fn gateway_url_trims_trailing_slash() {
+        let settings = crate::config::IpfsSettings {
+            prefer_local: false,
+            public_gateway: "https://gw.example/".into(),
+            ..Default::default()
+        };
+        let client = IpfsClient::from_settings(settings);
+        assert_eq!(client.gateway_url("cid"), "https://gw.example/ipfs/cid");
     }
 }

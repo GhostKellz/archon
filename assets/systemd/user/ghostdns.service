@@ -1,6 +1,6 @@
 [Unit]
 Description=Archon GhostDNS secure resolver
-Documentation=https://github.com/ghostkellz/archon/blob/main/docs/chromium_max.md
+Documentation=https://github.com/ghostkellz/archon/blob/main/docs/architecture/chromium-max.md
 After=network-online.target
 Wants=network-online.target
 

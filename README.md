@@ -31,6 +31,8 @@
 
 It’s the next evolution of privacy browsers — *Brave meets Comet meets Arch Linux meets wayland native* — minimal, fast, intelligent, and truly yours.
 
+> 📚 **Documentation:** Full guides live in [`docs/`](docs/README.md) — start with the [Quick Start](docs/getting-started/quickstart.md).
+
 ## ✨ Philosophy
 
 * 🧘 **Minimal Zen UI** — distraction-free, fluid, GPU-accelerated.
@@ -53,7 +55,14 @@ Archon is **LLM-aware** by design:
 | 🧠 **Anthropic Claude**              | REST (`v1/messages`)       |  ✅   |  ➖  | Set `ANTHROPIC_API_KEY`, override `anthropic-version` if needed.      |
 | 🌈 **Google Gemini**                | REST (`generateContent`)   |  ✅   |  ✅  | Set `GEMINI_API_KEY`, Archon handles prompt scaffolding.              |
 | 🚀 **xAI Grok**                      | REST (`chat/completions`)  |  ➖   |  ➖  | Set `XAI_API_KEY`, chats like OpenAI-compatible APIs.                 |
-| 🕹️ r**Ghostctl Hooks**               | internal API               |  ➖   |  ➖  | For automation, system integration, and context sharing.              |
+| 🔭 **Perplexity**                    | REST (`chat/completions`)  |  ➖   |  ➖  | Set `PERPLEXITY_API_KEY`; online/grounded models.                    |
+| 🔀 **LiteLLM**                       | unified proxy              |  ⚙️   |  ⚙️  | Front 100+ providers through one endpoint; capabilities per backend. |
+| 🌐 **OpenRouter**                    | multi-provider routing     |  ⚙️   |  ⚙️  | Set the configured key; routes to many upstream models.              |
+| ⚡ **Groq**                          | REST (`chat/completions`)  |  ➖   |  ➖  | Low-latency inference for supported open models.                     |
+| 🧩 **Together AI**                   | REST (`chat/completions`)  |  ➖   |  ➖  | Open-source model hosting via the configured key.                    |
+| 🕹️ **Ghostctl Hooks**                | internal API               |  ➖   |  ➖  | For automation, system integration, and context sharing.            |
+
+Capability legend: ✅ supported · ➖ not applicable · ⚙️ depends on the selected backend. Provider kinds are defined in `src/config.rs` (`AiProviderKind`); each is disabled until its API key is exported.
 
 ### Configurable AI bridge
 
@@ -323,7 +332,7 @@ The script verifies Manifest V3 metadata, required fields, and the presence of `
 - **Policy conflicts:** Managed policies live at `/usr/share/archon/policy/`. When testing alternate configs, export `CHROME_POLICY_PATH` or remove the managed JSON so Chromium boots without enforcement.
 - **Validator failures:** Re-run `python tools/check_theme_manifests.py` and inspect the failing manifest paths. The script exits non-zero if any theme remains on Manifest V2 or lacks required fields.
 
-See `packaging/README.md` for a deeper dive into distribution artifacts and helper scripts like `tools/scripts/package_sidebar.sh` (regenerate sidebar ZIP) and `tools/scripts/export_theme_pack.sh` (stage Chromium themes for packaging). For step-by-step recovery scenarios, read `docs/install_troubleshooting.md`.
+See `packaging/README.md` for a deeper dive into distribution artifacts and helper scripts like `tools/scripts/package_sidebar.sh` (regenerate sidebar ZIP) and `tools/scripts/export_theme_pack.sh` (stage Chromium themes for packaging). For step-by-step recovery scenarios, read `docs/getting-started/troubleshooting.md`.
 
 ## 🖼 Icon Variants
 

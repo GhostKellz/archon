@@ -11,8 +11,13 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::ai::{AiBridge, AiChatPrompt, BlockingAiHttp};
+use crate::ai::{AiBridge, AiChatPrompt, AiHttp, BlockingAiHttp};
+use crate::browser::BrowserDriver;
 use crate::config::AutomationSettings;
+use crate::sync_util::LockResultExt;
+
+/// Upper bound on a `Wait` action's sleep, in milliseconds.
+const MAX_WAIT_MS: u64 = 5_000;
 
 /// Types of web actions.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +67,23 @@ impl RiskLevel {
 }
 
 impl ActionType {
+    /// Map a free-form keyword (from an LLM plan) to an action type.
+    pub fn from_keyword(keyword: &str) -> Option<Self> {
+        Some(match keyword.trim().to_lowercase().as_str() {
+            "click" => Self::Click,
+            "type" => Self::Type,
+            "navigate" => Self::Navigate,
+            "scroll" => Self::Scroll,
+            "wait" => Self::Wait,
+            "screenshot" => Self::Screenshot,
+            "extract" => Self::Extract,
+            "submit" => Self::Submit,
+            "select" => Self::Select,
+            "hover" => Self::Hover,
+            _ => return None,
+        })
+    }
+
     /// Get the risk level for this action type.
     pub fn risk_level(&self) -> RiskLevel {
         match self {
@@ -259,6 +281,15 @@ pub struct PlannedStep {
     pub requires_confirmation: bool,
 }
 
+/// The next step decided by the agent planner.
+#[derive(Debug, Clone)]
+pub enum NextAction {
+    /// Perform a concrete browser action.
+    Act(WebAction),
+    /// The goal is complete; the string is the final answer/summary.
+    Finish(String),
+}
+
 /// Entry in the action history log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActionHistoryEntry {
@@ -311,7 +342,7 @@ impl RateLimiter {
     }
 
     fn check(&self) -> bool {
-        let mut timestamps = self.timestamps.lock().expect("lock poisoned");
+        let mut timestamps = self.timestamps.lock().recover();
         let now = Instant::now();
         let cutoff = now - Duration::from_secs(60);
 
@@ -328,7 +359,7 @@ impl RateLimiter {
 
     /// Count actions in the current rate window (last 60 seconds).
     pub fn count(&self) -> usize {
-        let timestamps = self.timestamps.lock().expect("lock poisoned");
+        let timestamps = self.timestamps.lock().recover();
         let now = Instant::now();
         let cutoff = now - Duration::from_secs(60);
         timestamps.iter().filter(|&&t| t > cutoff).count()
@@ -386,7 +417,7 @@ impl AutomationOrchestrator {
             issues.push("No allowed domains configured - all domains blocked by default".into());
         }
 
-        let history = self.history.lock().expect("lock poisoned");
+        let history = self.history.lock().recover();
 
         AutomationHealthReport {
             enabled: self.settings.enabled,
@@ -503,10 +534,124 @@ impl AutomationOrchestrator {
                 domain: action.domain.clone(),
                 user: None,
             };
-            self.history.lock().expect("lock poisoned").push(entry);
+            self.history.lock().recover().push(entry);
         }
 
         Ok(result)
+    }
+
+    /// Execute an action against a live browser driver.
+    ///
+    /// Unlike [`execute_action`](Self::execute_action) (which previews/stubs), this
+    /// drives a real [`BrowserDriver`]. Validation failures and driver errors are
+    /// recorded in the returned [`ActionResult`] (`success: false`) rather than
+    /// aborting, so an agent loop can decide how to proceed.
+    pub fn execute_action_with(
+        &self,
+        action: &WebAction,
+        driver: &dyn BrowserDriver,
+    ) -> Result<ActionResult> {
+        if !self.settings.enabled {
+            bail!("Automation is disabled");
+        }
+
+        let started = Instant::now();
+
+        let validation = self.validate_action(action);
+        let (success, data, error) = if !validation.valid {
+            (
+                false,
+                None,
+                Some(format!(
+                    "Action validation failed: {}",
+                    validation.issues.join("; ")
+                )),
+            )
+        } else {
+            match self.dispatch_action(action, driver) {
+                Ok(data) => (true, data, None),
+                Err(err) => (false, None, Some(format!("{err:#}"))),
+            }
+        };
+
+        let elapsed = started.elapsed();
+        let result = ActionResult {
+            action_id: action.id,
+            success,
+            data,
+            error,
+            latency_ms: elapsed.as_millis() as u64,
+            timestamp: Utc::now(),
+        };
+
+        if self.settings.log_all_actions {
+            let entry = ActionHistoryEntry {
+                id: Uuid::new_v4(),
+                action: action.clone(),
+                result: result.clone(),
+                domain: action.domain.clone(),
+                user: None,
+            };
+            self.history.lock().recover().push(entry);
+        }
+
+        Ok(result)
+    }
+
+    /// Dispatch a single validated action to the driver, returning optional result data.
+    fn dispatch_action(
+        &self,
+        action: &WebAction,
+        driver: &dyn BrowserDriver,
+    ) -> Result<Option<String>> {
+        let selector = || -> Result<&str> {
+            action
+                .selector
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .context("action requires a selector")
+        };
+        let value = || -> Result<&str> {
+            action
+                .value
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .context("action requires a value")
+        };
+
+        match action.action_type {
+            ActionType::Navigate => {
+                driver.navigate(value()?)?;
+                Ok(None)
+            }
+            ActionType::Click | ActionType::Submit => {
+                driver.click(selector()?)?;
+                Ok(None)
+            }
+            ActionType::Type => {
+                driver.type_text(selector()?, value()?)?;
+                Ok(None)
+            }
+            ActionType::Scroll => {
+                driver.scroll(action.selector.as_deref().filter(|s| !s.is_empty()))?;
+                Ok(None)
+            }
+            ActionType::Extract => Ok(Some(driver.extract(selector()?)?)),
+            ActionType::Screenshot => Ok(Some(driver.screenshot()?)),
+            ActionType::Wait => {
+                let ms = action
+                    .value
+                    .as_deref()
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+                    .unwrap_or(500)
+                    .min(MAX_WAIT_MS);
+                std::thread::sleep(Duration::from_millis(ms));
+                Ok(None)
+            }
+            ActionType::Select | ActionType::Hover => {
+                bail!("action type {:?} is not yet supported by the driver", action.action_type)
+            }
+        }
     }
 
     /// Execute a sequence of actions.
@@ -609,18 +754,9 @@ impl AutomationOrchestrator {
         let mut steps = Vec::with_capacity(parsed.len());
 
         for (i, p) in parsed.into_iter().enumerate() {
-            let action_type = match p.action_type.to_lowercase().as_str() {
-                "click" => ActionType::Click,
-                "type" => ActionType::Type,
-                "navigate" => ActionType::Navigate,
-                "scroll" => ActionType::Scroll,
-                "screenshot" => ActionType::Screenshot,
-                "extract" => ActionType::Extract,
-                "submit" => ActionType::Submit,
-                "select" => ActionType::Select,
-                "wait" => ActionType::Wait,
-                "hover" => ActionType::Hover,
-                _ => continue, // Skip unknown actions
+            let action_type = match ActionType::from_keyword(&p.action_type) {
+                Some(action_type) => action_type,
+                None => continue, // Skip unknown actions
             };
 
             let action = WebAction {
@@ -647,6 +783,101 @@ impl AutomationOrchestrator {
         }
 
         Ok(steps)
+    }
+
+    /// Decide the single next action toward `goal` given the current page observation.
+    ///
+    /// Provider-agnostic: the model is asked for one JSON object describing the next
+    /// step (or `finish`). Works with any configured provider, including local Ollama.
+    pub fn plan_next_action<H: AiHttp>(
+        &self,
+        goal: &str,
+        observation: &str,
+        history: &[String],
+        provider: Option<&str>,
+        http: &H,
+    ) -> Result<NextAction> {
+        // Planning is read-only (no page mutation), so it is allowed even when
+        // automation is disabled — the real safety gate is `execute_action_with`.
+        let history_block = if history.is_empty() {
+            "(none yet)".to_string()
+        } else {
+            history
+                .iter()
+                .enumerate()
+                .map(|(i, h)| format!("{}. {}", i + 1, h))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let prompt = format!(
+            "You are Archon's browser automation agent. Decide the SINGLE next action \
+             to make progress toward the goal, using the current page observation.\n\n\
+             Goal: {goal}\n\n\
+             Actions so far:\n{history_block}\n\n\
+             Current page observation:\n{observation}\n\n\
+             Respond with EXACTLY ONE JSON object and nothing else:\n\
+             {{\"action_type\": \"navigate|click|type|scroll|extract|screenshot|wait|finish\", \
+             \"selector\": \"css selector or null\", \
+             \"value\": \"text/url/ms or null\", \
+             \"description\": \"short reason\"}}\n\
+             Use action_type \"finish\" when the goal is achieved; put the final \
+             answer in \"description\"."
+        );
+
+        let ai_prompt = AiChatPrompt::text(&prompt);
+        let response = self
+            .ai
+            .chat_with_prompt(provider, ai_prompt, http)
+            .with_context(|| "Failed to plan next action")?;
+
+        self.parse_next_action(&response.reply)
+    }
+
+    /// Parse a single-object planner response into a [`NextAction`].
+    fn parse_next_action(&self, response: &str) -> Result<NextAction> {
+        let start = response.find('{');
+        let end = response.rfind('}');
+        let json_str = match (start, end) {
+            (Some(s), Some(e)) if e > s => &response[s..=e],
+            _ => bail!("Could not find JSON object in planner response"),
+        };
+
+        #[derive(Deserialize)]
+        struct ParsedNext {
+            action_type: String,
+            selector: Option<String>,
+            value: Option<String>,
+            description: Option<String>,
+        }
+
+        let parsed: ParsedNext =
+            serde_json::from_str(json_str).with_context(|| "Failed to parse planner JSON")?;
+
+        let keyword = parsed.action_type.trim().to_lowercase();
+        if keyword == "finish" || keyword == "done" {
+            return Ok(NextAction::Finish(
+                parsed.description.unwrap_or_else(|| "Goal complete".into()),
+            ));
+        }
+
+        let action_type = ActionType::from_keyword(&keyword)
+            .with_context(|| format!("Unknown action type '{keyword}' in planner response"))?;
+
+        let clean = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+
+        let action = WebAction {
+            id: Uuid::new_v4(),
+            action_type: action_type.clone(),
+            selector: clean(parsed.selector),
+            value: clean(parsed.value),
+            sensitive: false,
+            require_confirmation: action_type.risk_level().requires_confirmation(),
+            description: clean(parsed.description),
+            domain: None,
+        };
+
+        Ok(NextAction::Act(action))
     }
 
     /// Check if a domain is allowed.
@@ -677,12 +908,12 @@ impl AutomationOrchestrator {
 
     /// Get action history.
     pub fn history(&self) -> Vec<ActionHistoryEntry> {
-        self.history.lock().expect("lock poisoned").clone()
+        self.history.lock().recover().clone()
     }
 
     /// Clear action history.
     pub fn clear_history(&self) {
-        self.history.lock().expect("lock poisoned").clear();
+        self.history.lock().recover().clear();
     }
 
     /// Get current automation policy.
@@ -738,5 +969,124 @@ mod tests {
         let action = WebAction::type_text("#password", "secret").as_sensitive();
         assert!(action.sensitive);
         assert_eq!(action.risk_level(), RiskLevel::Critical);
+    }
+
+    use crate::config::AiSettings;
+    use crate::transcript::TranscriptStore;
+
+    fn orchestrator(settings: AutomationSettings) -> AutomationOrchestrator {
+        let root =
+            std::env::temp_dir().join(format!("archon-automation-test-{}", Uuid::new_v4()));
+        let store = TranscriptStore::new(root).expect("transcript store");
+        let bridge = AiBridge::from_settings(&AiSettings::default(), Arc::new(store));
+        AutomationOrchestrator::from_settings(settings, Arc::new(bridge))
+    }
+
+    fn enabled_settings() -> AutomationSettings {
+        AutomationSettings {
+            enabled: true,
+            require_confirmation: false,
+            ..AutomationSettings::default()
+        }
+    }
+
+    #[test]
+    fn rate_limiter_blocks_after_threshold() {
+        let limiter = RateLimiter::new(2);
+        assert!(limiter.check());
+        assert!(limiter.check());
+        assert!(!limiter.check());
+        assert_eq!(limiter.count(), 2);
+    }
+
+    #[test]
+    fn validate_action_flags_password_selectors() {
+        let orch = orchestrator(enabled_settings());
+        let action = WebAction::type_text("#user_password", "hunter2");
+        let result = orch.validate_action(&action);
+        assert!(!result.valid);
+        assert!(result.issues.iter().any(|i| i.contains("password field")));
+    }
+
+    #[test]
+    fn validate_action_flags_disallowed_domain() {
+        let settings = AutomationSettings {
+            allowed_domains: vec!["example.com".into()],
+            ..enabled_settings()
+        };
+        let orch = orchestrator(settings);
+        let mut action = WebAction::click("#go");
+        action.domain = Some("evil.test".into());
+        let result = orch.validate_action(&action);
+        assert!(!result.valid);
+        assert!(result.issues.iter().any(|i| i.contains("not allowed")));
+    }
+
+    #[test]
+    fn validate_action_passes_for_safe_low_risk_action() {
+        let orch = orchestrator(enabled_settings());
+        let result = orch.validate_action(&WebAction::screenshot());
+        assert!(result.valid, "issues: {:?}", result.issues);
+    }
+
+    #[test]
+    fn domain_blocklist_takes_precedence_over_allowlist() {
+        let settings = AutomationSettings {
+            allowed_domains: vec!["example.com".into()],
+            blocked_domains: vec!["example.com".into()],
+            ..enabled_settings()
+        };
+        let orch = orchestrator(settings);
+        assert!(!orch.is_domain_allowed("www.example.com"));
+    }
+
+    #[test]
+    fn domain_allowed_when_allowlist_empty() {
+        let orch = orchestrator(enabled_settings());
+        assert!(orch.is_domain_allowed("anything.test"));
+    }
+
+    #[test]
+    fn execute_action_in_sandbox_records_history() {
+        let orch = orchestrator(enabled_settings());
+        let result = orch
+            .execute_action(&WebAction::screenshot())
+            .expect("sandbox execution succeeds");
+        assert!(result.success);
+        assert!(result.data.unwrap().contains("SANDBOX"));
+
+        let history = orch.history();
+        assert_eq!(history.len(), 1);
+        orch.clear_history();
+        assert!(orch.history().is_empty());
+    }
+
+    #[test]
+    fn execute_action_when_disabled_errors() {
+        let orch = orchestrator(AutomationSettings::default()); // enabled = false
+        let err = orch
+            .execute_action(&WebAction::screenshot())
+            .unwrap_err();
+        assert!(err.to_string().contains("disabled"));
+    }
+
+    #[test]
+    fn parse_plan_response_extracts_known_actions_and_skips_unknown() {
+        let orch = orchestrator(enabled_settings());
+        let json = r##"prefix [
+            {"action_type": "navigate", "value": "https://x.test", "description": "go"},
+            {"action_type": "frobnicate", "description": "unknown"},
+            {"action_type": "click", "selector": "#ok", "description": "click ok"}
+        ] suffix"##;
+        let steps = orch.parse_plan_response(json).expect("parses");
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].action.action_type, ActionType::Navigate);
+        assert_eq!(steps[1].action.action_type, ActionType::Click);
+    }
+
+    #[test]
+    fn parse_plan_response_errors_without_array() {
+        let orch = orchestrator(enabled_settings());
+        assert!(orch.parse_plan_response("no json here").is_err());
     }
 }

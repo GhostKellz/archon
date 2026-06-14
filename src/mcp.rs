@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use url::Url;
 
 use crate::config::{McpConnector, McpDockerSettings, McpSettings};
+use crate::process_util::run_with_timeout;
 
 /// High-level orchestrator for Model Context Protocol sidecars and connectors.
 #[derive(Debug, Clone)]
@@ -21,13 +22,13 @@ pub struct McpOrchestrator {
 }
 
 impl McpOrchestrator {
-    pub fn from_settings(settings: McpSettings) -> Self {
+    pub fn from_settings(settings: McpSettings) -> Result<Self> {
         let client = Client::builder()
             .user_agent("Archon/0.1 (mcp-orchestrator)")
             .timeout(Duration::from_secs(4))
             .build()
-            .expect("failed to build reqwest client for MCP orchestrator");
-        Self { settings, client }
+            .context("failed to build reqwest client for MCP orchestrator")?;
+        Ok(Self { settings, client })
     }
 
     pub fn connectors(&self) -> &[McpConnector] {
@@ -96,8 +97,7 @@ impl McpOrchestrator {
         }
         command.args(["up", "-d"]);
 
-        let output = command
-            .output()
+        let output = run_with_timeout(command, Duration::from_secs(120))
             .context("failed to execute docker compose")?;
         let success = output.status.success();
         let mut message = String::new();
@@ -360,11 +360,69 @@ mod tests {
                 enabled: false,
             }],
         };
-        let orchestrator = McpOrchestrator::from_settings(settings.clone());
+        let orchestrator = McpOrchestrator::from_settings(settings.clone()).unwrap();
         let report = orchestrator.health_report();
         assert_eq!(report.connectors.len(), 1);
         let status = &report.connectors[0];
         assert!(status.issues.iter().any(|issue| issue.contains("disabled")));
         assert!(!status.healthy);
+    }
+
+    fn connector(name: &str, endpoint: &str, enabled: bool) -> McpConnector {
+        McpConnector {
+            name: name.into(),
+            kind: "mock".into(),
+            endpoint: endpoint.into(),
+            api_key_env: None,
+            enabled,
+        }
+    }
+
+    #[test]
+    fn invalid_endpoint_url_is_reported() {
+        let settings = McpSettings {
+            docker: None,
+            connectors: vec![connector("broken", "not a url", false)],
+        };
+        let orchestrator = McpOrchestrator::from_settings(settings).unwrap();
+        let status = &orchestrator.health_report().connectors[0];
+        assert!(status.issues.iter().any(|i| i.contains("invalid endpoint")));
+    }
+
+    #[test]
+    fn call_tool_rejects_unknown_connector() {
+        let settings = McpSettings {
+            docker: None,
+            connectors: vec![],
+        };
+        let orchestrator = McpOrchestrator::from_settings(settings).unwrap();
+        let err = orchestrator
+            .call_tool("ghost", "do", serde_json::Value::Null)
+            .unwrap_err();
+        assert!(err.to_string().contains("not configured"));
+    }
+
+    #[test]
+    fn call_tool_rejects_disabled_connector() {
+        let settings = McpSettings {
+            docker: None,
+            connectors: vec![connector("svc", "http://localhost:9", false)],
+        };
+        let orchestrator = McpOrchestrator::from_settings(settings).unwrap();
+        let err = orchestrator
+            .call_tool("svc", "do", serde_json::Value::Null)
+            .unwrap_err();
+        assert!(err.to_string().contains("disabled"));
+    }
+
+    #[test]
+    fn connectors_accessor_exposes_configuration() {
+        let settings = McpSettings {
+            docker: None,
+            connectors: vec![connector("a", "http://localhost:1", false)],
+        };
+        let orchestrator = McpOrchestrator::from_settings(settings).unwrap();
+        assert_eq!(orchestrator.connectors().len(), 1);
+        assert_eq!(orchestrator.connectors()[0].name, "a");
     }
 }

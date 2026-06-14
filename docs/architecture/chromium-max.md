@@ -369,7 +369,7 @@ Emit HTML reports to `~/Archon/benchmarks/latest.html`, keep historical runs for
 
 ### Workstream 6 – Release engineering
 
-- Establish artifact signing (GPG and/or cosign), publish verification steps, and update `docs/release_checklist.md` with beta gates.
+- Establish artifact signing (GPG and/or cosign), publish verification steps, and update `docs/operations/release-checklist.md` with beta gates.
 - Describe the update cadence (paru/pacman flows, manual tarballs) and include post-release validation steps.
 - Draft announcement + known issues template to accompany beta and RC drops.
 
@@ -385,7 +385,7 @@ Tackle Workstreams 1 and 2 first to lock in runtime stability, follow with Works
 4. Build native messaging host crate reusing `AiBridge` (place under `crates/archon-host/`) and bundle the signed sidebar extension + allowlist.
 5. Prototype `ghostdns` (reuse `crypto` module), apply systemd hardening, and set DoH template to localhost.
 6. Stand up `crates/archon-bench` with KPI thresholds + CI guardrails.
-7. Document developer setup and troubleshooting in `docs/chromium_max.md` (this file) and link from `README.md`.
+7. Document developer setup and troubleshooting in `docs/architecture/chromium-max.md` (this file) and link from `README.md`.
 
 ---
 

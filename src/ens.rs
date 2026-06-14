@@ -11,6 +11,8 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
+use crate::sync_util::LockResultExt;
+
 use crate::config::{EnsBadgeStyle, EnsSettings};
 use crate::crypto::{CryptoStack, DomainResolution, DomainService};
 
@@ -100,7 +102,7 @@ impl EnsResolver {
 
         // Check cache first
         if self.settings.cache_enabled {
-            let cache = self.cache.read().expect("lock poisoned");
+            let cache = self.cache.read().recover();
             if let Some(entry) = cache.get(&normalized) {
                 let ttl = Duration::from_secs(self.settings.cache_ttl_secs);
                 if entry.resolved_at.elapsed() < ttl {
@@ -118,7 +120,7 @@ impl EnsResolver {
 
         // Update cache
         if self.settings.cache_enabled {
-            let mut cache = self.cache.write().expect("lock poisoned");
+            let mut cache = self.cache.write().recover();
             cache.insert(
                 normalized,
                 EnsCacheEntry {
@@ -188,7 +190,7 @@ impl EnsResolver {
             }
 
             // Check cache for matching names
-            let cache = self.cache.read().expect("lock poisoned");
+            let cache = self.cache.read().recover();
             for (name, _) in cache.iter() {
                 if name.contains(rest) && suggestions.len() < limit {
                     suggestions.push(OmniboxSuggestion {
@@ -206,7 +208,7 @@ impl EnsResolver {
 
     /// Clear the resolution cache
     pub fn clear_cache(&self) {
-        let mut cache = self.cache.write().expect("lock poisoned");
+        let mut cache = self.cache.write().recover();
         cache.clear();
         info!("ENS cache cleared");
     }
@@ -219,7 +221,7 @@ impl EnsResolver {
             show_badge: self.settings.show_badge,
             badge_style: self.settings.badge_style,
             cache_enabled: self.settings.cache_enabled,
-            cache_size: self.cache.read().expect("lock poisoned").len(),
+            cache_size: self.cache.read().recover().len(),
             supported_tlds: self.settings.supported_tlds.clone(),
         }
     }
@@ -502,5 +504,94 @@ mod tests {
         let html = badge.to_html();
         assert!(html.contains("ens-badge-full"));
         assert!(html.contains("archon.eth"));
+    }
+
+    fn sample_resolution(name: &str) -> EnsResolution {
+        EnsResolution {
+            name: name.into(),
+            address: Some("0xabc".into()),
+            avatar_url: None,
+            contenthash: None,
+            gateway_url: None,
+            records: HashMap::new(),
+            service: DomainService::Ens,
+            social: EnsSocial::default(),
+        }
+    }
+
+    #[test]
+    fn suggest_offers_subcommands_for_bare_prefix() {
+        let resolver = EnsResolver::from_settings(EnsSettings::default());
+        let suggestions = resolver.suggest("ens:", 10);
+        assert!(suggestions.iter().any(|s| s.text == "ens:lookup"));
+        assert!(suggestions.iter().any(|s| s.text == "ens:help"));
+    }
+
+    #[test]
+    fn suggest_expands_partial_name_with_tlds() {
+        let resolver = EnsResolver::from_settings(EnsSettings::default());
+        let suggestions = resolver.suggest("ens:vita", 5);
+        assert!(suggestions.iter().all(|s| s.text.starts_with("ens:vita.")));
+        assert!(suggestions.len() <= 5);
+        assert!(!suggestions.is_empty());
+    }
+
+    #[test]
+    fn suggest_respects_limit() {
+        let resolver = EnsResolver::from_settings(EnsSettings::default());
+        let suggestions = resolver.suggest("ens:test", 2);
+        assert!(suggestions.len() <= 2);
+    }
+
+    #[test]
+    fn suggest_ignores_non_ens_input() {
+        let resolver = EnsResolver::from_settings(EnsSettings::default());
+        assert!(resolver.suggest("https://example.com", 5).is_empty());
+    }
+
+    #[test]
+    fn get_badge_hidden_style_returns_none() {
+        let settings = EnsSettings {
+            badge_style: EnsBadgeStyle::Hidden,
+            ..EnsSettings::default()
+        };
+        let resolver = EnsResolver::from_settings(settings);
+        assert!(resolver.get_badge(&sample_resolution("test.eth")).is_none());
+    }
+
+    #[test]
+    fn get_badge_respects_show_badge_toggle() {
+        let settings = EnsSettings {
+            show_badge: false,
+            ..EnsSettings::default()
+        };
+        let resolver = EnsResolver::from_settings(settings);
+        assert!(resolver.get_badge(&sample_resolution("test.eth")).is_none());
+    }
+
+    #[test]
+    fn get_badge_returns_badge_when_enabled() {
+        let resolver = EnsResolver::from_settings(EnsSettings::default());
+        let badge = resolver
+            .get_badge(&sample_resolution("vitalik.eth"))
+            .expect("badge produced");
+        assert_eq!(badge.name, "vitalik.eth");
+        assert_eq!(badge.address.as_deref(), Some("0xabc"));
+    }
+
+    #[test]
+    fn clear_cache_resets_size_in_health_report() {
+        let resolver = EnsResolver::from_settings(EnsSettings::default());
+        // Seed the cache directly to avoid network resolution.
+        resolver.cache.write().recover().insert(
+            "seed.eth".into(),
+            EnsCacheEntry {
+                resolution: sample_resolution("seed.eth"),
+                resolved_at: Instant::now(),
+            },
+        );
+        assert_eq!(resolver.health_report().cache_size, 1);
+        resolver.clear_cache();
+        assert_eq!(resolver.health_report().cache_size, 0);
     }
 }

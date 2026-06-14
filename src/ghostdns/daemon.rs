@@ -262,7 +262,7 @@ struct CacheKey {
 
 impl CacheKey {
     fn from_message(message: &Message) -> Option<Self> {
-        let question = message.queries().first()?;
+        let question = message.queries.first()?;
         let name = question.name().to_ascii();
         Some(Self {
             name: name.trim_end_matches('.').to_ascii_lowercase(),
@@ -1540,7 +1540,7 @@ async fn store_cache_entry(
 
 fn classify_response_for_cache(bytes: &[u8]) -> Option<CacheEntryKind> {
     match Message::from_vec(bytes) {
-        Ok(message) => match message.response_code() {
+        Ok(message) => match message.metadata.response_code {
             ResponseCode::NoError => Some(CacheEntryKind::Positive),
             ResponseCode::NXDomain => Some(CacheEntryKind::Negative),
             _ => None,
@@ -1796,34 +1796,34 @@ mod tests {
 
     #[test]
     fn classify_response_identifies_positive_and_negative() {
-        let mut ok = Message::new();
-        ok.set_response_code(ResponseCode::NoError);
+        let mut ok = Message::query();
+        ok.metadata.response_code = ResponseCode::NoError;
         let ok_bytes = ok.to_vec().expect("serialise ok response");
         assert!(matches!(
             classify_response_for_cache(&ok_bytes),
             Some(CacheEntryKind::Positive)
         ));
 
-        let mut nx = Message::new();
-        nx.set_response_code(ResponseCode::NXDomain);
+        let mut nx = Message::query();
+        nx.metadata.response_code = ResponseCode::NXDomain;
         let nx_bytes = nx.to_vec().expect("serialise nxdomain");
         assert!(matches!(
             classify_response_for_cache(&nx_bytes),
             Some(CacheEntryKind::Negative)
         ));
 
-        let mut servfail = Message::new();
-        servfail.set_response_code(ResponseCode::ServFail);
+        let mut servfail = Message::query();
+        servfail.metadata.response_code = ResponseCode::ServFail;
         let sf_bytes = servfail.to_vec().expect("serialise servfail");
         assert!(classify_response_for_cache(&sf_bytes).is_none());
     }
 
     #[test]
     fn enable_dnssec_flag_sets_do_bit() {
-        let mut message = Message::new();
-        assert!(message.extensions().is_none());
+        let mut message = Message::query();
+        assert!(message.edns.is_none());
         enable_dnssec_flag(&mut message);
-        let edns = message.extensions().as_ref().expect("edns section created");
+        let edns = message.edns.as_ref().expect("edns section created");
         assert!(edns.flags().dnssec_ok);
     }
 
@@ -1954,9 +1954,9 @@ mod tests {
     #[test]
     fn apply_ecs_policy_strips_subnet_when_passthrough_disabled() {
         let subnet = ClientSubnet::from_str("192.0.2.0/24").expect("parse subnet");
-        let mut message = Message::new();
+        let mut message = Message::query();
         message
-            .extensions_mut()
+            .edns
             .get_or_insert_with(Edns::new)
             .options_mut()
             .insert(EdnsOption::Subnet(subnet));
@@ -1968,10 +1968,7 @@ mod tests {
 
         let stripped = apply_ecs_policy(&mut message, &security);
 
-        let edns = message
-            .extensions()
-            .as_ref()
-            .expect("edns section retained");
+        let edns = message.edns.as_ref().expect("edns section retained");
         assert!(edns.option(EdnsCode::Subnet).is_none());
         assert!(stripped);
     }
@@ -1979,9 +1976,9 @@ mod tests {
     #[test]
     fn apply_ecs_policy_keeps_subnet_when_passthrough_enabled() {
         let subnet = ClientSubnet::from_str("2001:db8::/48").expect("parse subnet");
-        let mut message = Message::new();
+        let mut message = Message::query();
         message
-            .extensions_mut()
+            .edns
             .get_or_insert_with(Edns::new)
             .options_mut()
             .insert(EdnsOption::Subnet(subnet));
@@ -1993,10 +1990,7 @@ mod tests {
 
         let stripped = apply_ecs_policy(&mut message, &security);
 
-        let edns = message
-            .extensions()
-            .as_ref()
-            .expect("edns section retained");
+        let edns = message.edns.as_ref().expect("edns section retained");
         assert!(edns.option(EdnsCode::Subnet).is_some());
         assert!(!stripped);
     }
@@ -2092,14 +2086,11 @@ mod tests {
 
 fn build_error_response(query: &[u8], code: ResponseCode) -> Option<Vec<u8>> {
     let request = Message::from_vec(query).ok()?;
-    let mut response = Message::new();
-    response.set_id(request.id());
-    response.set_message_type(MessageType::Response);
-    response.set_op_code(request.op_code());
-    response.set_recursion_desired(request.recursion_desired());
-    response.set_recursion_available(true);
-    response.set_response_code(code);
-    response.add_queries(request.queries().to_vec());
+    let mut response = Message::new(request.metadata.id, MessageType::Response, request.metadata.op_code);
+    response.metadata.recursion_desired = request.metadata.recursion_desired;
+    response.metadata.recursion_available = true;
+    response.metadata.response_code = code;
+    response.add_queries(request.queries.to_vec());
     response.to_vec().ok()
 }
 
@@ -2252,7 +2243,7 @@ fn path_matches(expected: &str, tail: &str) -> bool {
 
 async fn handle_dns_message(state: Arc<DohState>, request: Message) -> Result<DnsOutcome> {
     let query = request
-        .queries()
+        .queries
         .first()
         .ok_or_else(|| anyhow!("DNS query missing question"))?;
 
@@ -2274,16 +2265,17 @@ async fn handle_dns_message(state: Arc<DohState>, request: Message) -> Result<Dn
 }
 
 fn build_txt_response(original: &Message, resolution: DomainResolution) -> Result<Vec<u8>> {
-    let mut response = Message::new();
-    response.set_id(original.id());
-    response.set_message_type(MessageType::Response);
-    response.set_op_code(original.op_code());
-    response.set_recursion_desired(original.recursion_desired());
-    response.set_recursion_available(true);
-    response.set_response_code(ResponseCode::NoError);
-    response.add_queries(original.queries().to_vec());
+    let mut response = Message::new(
+        original.metadata.id,
+        MessageType::Response,
+        original.metadata.op_code,
+    );
+    response.metadata.recursion_desired = original.metadata.recursion_desired;
+    response.metadata.recursion_available = true;
+    response.metadata.response_code = ResponseCode::NoError;
+    response.add_queries(original.queries.to_vec());
 
-    if let Some(question) = original.queries().first() {
+    if let Some(question) = original.queries.first() {
         let mut parts = Vec::new();
         if let Some(address) = &resolution.primary_address {
             parts.push(format!("address={address}"));
@@ -2579,7 +2571,7 @@ fn verify_dnssec_if_required(state: &Arc<DohState>, bytes: &[u8]) -> Result<()> 
 
     match Message::from_vec(bytes) {
         Ok(resp) => {
-            if !resp.authentic_data() {
+            if !resp.metadata.authentic_data {
                 if state.config.security.dnssec_fail_open {
                     state.metrics.inc_dnssec_fail_open();
                     warn!(
@@ -2608,7 +2600,7 @@ fn verify_dnssec_if_required(state: &Arc<DohState>, bytes: &[u8]) -> Result<()> 
 }
 
 fn enable_dnssec_flag(message: &mut Message) {
-    let edns = message.extensions_mut().get_or_insert_with(Edns::new);
+    let edns = message.edns.get_or_insert_with(Edns::new);
     edns.set_dnssec_ok(true);
 }
 
@@ -2617,7 +2609,7 @@ fn apply_ecs_policy(message: &mut Message, security: &SecuritySection) -> bool {
         return false;
     }
 
-    if let Some(edns) = message.extensions_mut().as_mut()
+    if let Some(edns) = message.edns.as_mut()
         && edns.option(EdnsCode::Subnet).is_some()
     {
         edns.options_mut().remove(EdnsCode::Subnet);

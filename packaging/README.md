@@ -47,11 +47,11 @@ The latter two scripts live in-repo for developers and CI to regenerate assets. 
 
 **How do I validate theme manifests before shipping?**
 
-Run `python tools/check_theme_manifests.py` or `make validate-themes` (if you add the convenience target) and cross-check the steps outlined in [docs/install_troubleshooting.md](../docs/install_troubleshooting.md#validator-failures).
+Run `python tools/check_theme_manifests.py` or `make validate-themes` (if you add the convenience target) and cross-check the steps outlined in [docs/getting-started/troubleshooting.md](../docs/getting-started/troubleshooting.md#validator-failures).
 
 **Where do the systemd user units live and what hardening is enabled?**
 
-Packages install `archon-host.service` and `ghostdns.service` to `/usr/lib/systemd/user/`. Their confinement settings (e.g. `ProtectSystem=strict`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`) are documented in the [Service hardening reference](../docs/install_troubleshooting.md#service-hardening-reference).
+Packages install `archon-host.service` and `ghostdns.service` to `/usr/lib/systemd/user/`. Their confinement settings (e.g. `ProtectSystem=strict`, `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`) are documented in the [Service hardening reference](../docs/getting-started/troubleshooting.md#service-hardening-reference).
 
 **How can I reproduce the deterministic sidebar ZIP?**
 
@@ -59,7 +59,7 @@ Use `make sidebar-zip` or `./tools/scripts/package_sidebar.sh`. The script sets 
 
 **What environment variables control reproducible builds?**
 
-See the [Chromium Max SOURCE_DATE_EPOCH notes](../docs/chromium_max.md#reproducible-builds) for how we seed timestamps and embed build metadata across packages.
+See the [Chromium Max SOURCE_DATE_EPOCH notes](../docs/architecture/chromium-max.md#reproducible-builds) for how we seed timestamps and embed build metadata across packages.
 
 **Do I need to ship the helper scripts with downstream packages?**
 

@@ -47,7 +47,7 @@ Use `systemctl --user edit <service>.service` to temporarily relax guards while 
 ## Builds, signatures, and verification
 
 - `SOURCE_DATE_EPOCH` anchors reproducible Chromium builds; build scripts emit SBOMs (SPDX JSON) and sha256 digests.
-- Release artifacts are signed with maintainer GPG keys (and optionally cosign). Check `docs/release_checklist.md` for the current signing procedure.
+- Release artifacts are signed with maintainer GPG keys (and optionally cosign). Check `docs/operations/release-checklist.md` for the current signing procedure.
 - Theme packs, sidebar archives, and native messaging manifests ship in deterministic paths under `/usr/share/archon`.
 
 ## Reporting & response
@@ -58,7 +58,7 @@ Use `systemctl --user edit <service>.service` to temporarily relax guards while 
 
 ## Roadmap
 
-- AppArmor/SELinux profiles for GhostDNS and the AI host (see `docs/roadmap.md`, Phase G).
+- AppArmor/SELinux profiles for GhostDNS and the AI host (see `docs/reference/roadmap.md`, Phase G).
 - Dependency scanning should continue to include `cargo audit` during release verification; unresolved RustSec findings must be explicitly documented before release.
 - Binary transparency (Sigstore/Rekor) for Chromium Max and Rust sidecar releases.
 - Hardened WebGPU test harnesses that record GPU resets per vendor for triage.

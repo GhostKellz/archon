@@ -199,3 +199,106 @@ impl ThemeRegistry {
             .expect("default theme parses")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn normalize_lowercases_and_replaces_separators() {
+        assert_eq!(ThemeRegistry::normalize("  Tokyo Night "), "tokyo-night");
+        assert_eq!(ThemeRegistry::normalize("Rose_Pine"), "rose-pine");
+        assert_eq!(ThemeRegistry::normalize("DRACULA"), "dracula");
+    }
+
+    #[test]
+    fn every_listed_builtin_theme_loads_and_parses() {
+        for name in ThemeRegistry::builtin_themes() {
+            let palette = ThemeRegistry::load(name, None)
+                .unwrap_or_else(|err| panic!("builtin '{name}' should load: {err}"));
+            assert!(!palette.name.is_empty());
+            assert!(!palette.primary_accent().is_empty());
+            assert!(!palette.secondary_accent().is_empty());
+        }
+    }
+
+    #[test]
+    fn unknown_theme_returns_error_without_config_dir() {
+        let err = ThemeRegistry::load("does-not-exist", None).unwrap_err();
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn default_palette_is_tokyonight() {
+        let palette = ThemeRegistry::default_palette();
+        assert_eq!(palette.name, ThemeRegistry::load("tokyonight", None).unwrap().name);
+    }
+
+    #[test]
+    fn ensure_installed_creates_then_skips_then_updates() {
+        let dir = tempdir().unwrap();
+        let created = ThemeRegistry::ensure_installed("tokyonight", Some(dir.path()))
+            .unwrap()
+            .expect("builtin theme installs");
+        assert_eq!(created.action, ThemeWriteAction::Created);
+        assert!(created.path.exists());
+
+        let skipped = ThemeRegistry::ensure_installed("tokyonight", Some(dir.path()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(skipped.action, ThemeWriteAction::Skipped);
+
+        fs::write(&created.path, "{\"stale\": true}").unwrap();
+        let updated = ThemeRegistry::ensure_installed("tokyonight", Some(dir.path()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.action, ThemeWriteAction::Updated);
+    }
+
+    #[test]
+    fn ensure_installed_is_noop_without_config_dir() {
+        assert!(ThemeRegistry::ensure_installed("tokyonight", None)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn ensure_installed_ignores_unknown_theme() {
+        let dir = tempdir().unwrap();
+        assert!(ThemeRegistry::ensure_installed("not-a-theme", Some(dir.path()))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn load_prefers_valid_user_override() {
+        let dir = tempdir().unwrap();
+        let theme_dir = dir.path().join("themes");
+        fs::create_dir_all(&theme_dir).unwrap();
+        let mut palette = ThemeRegistry::default_palette();
+        palette.label = "Custom Override".into();
+        palette.colors.accents.primary = "#abcdef".into();
+        fs::write(
+            theme_dir.join("tokyonight.json"),
+            serde_json::to_string_pretty(&palette).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = ThemeRegistry::load("tokyonight", Some(dir.path())).unwrap();
+        assert_eq!(loaded.label, "Custom Override");
+        assert_eq!(loaded.primary_accent(), "#abcdef");
+    }
+
+    #[test]
+    fn load_falls_back_to_builtin_on_malformed_override() {
+        let dir = tempdir().unwrap();
+        let theme_dir = dir.path().join("themes");
+        fs::create_dir_all(&theme_dir).unwrap();
+        fs::write(theme_dir.join("tokyonight.json"), "{ broken").unwrap();
+
+        let loaded = ThemeRegistry::load("tokyonight", Some(dir.path())).unwrap();
+        let builtin = ThemeRegistry::load("tokyonight", None).unwrap();
+        assert_eq!(loaded.label, builtin.label);
+    }
+}

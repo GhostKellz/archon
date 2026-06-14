@@ -434,4 +434,163 @@ mod tests {
         assert_eq!(request.url.as_deref(), Some("https://example.com"));
         assert_eq!(request.title.as_deref(), Some("Test Page"));
     }
+
+    #[test]
+    fn every_style_has_a_distinct_non_empty_prompt() {
+        let styles = [
+            SummarizeStyle::Bullets,
+            SummarizeStyle::Paragraph,
+            SummarizeStyle::KeyPoints,
+            SummarizeStyle::Executive,
+            SummarizeStyle::Technical,
+            SummarizeStyle::Eli5,
+            SummarizeStyle::Outline,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for style in styles {
+            let prompt = style.system_prompt();
+            assert!(!prompt.is_empty());
+            assert!(seen.insert(prompt), "duplicate prompt for {style:?}");
+        }
+    }
+
+    #[test]
+    fn from_str_aliases_resolve() {
+        assert_eq!("para".parse(), Ok(SummarizeStyle::Paragraph));
+        assert_eq!("key-points".parse(), Ok(SummarizeStyle::KeyPoints));
+        assert_eq!("tech".parse(), Ok(SummarizeStyle::Technical));
+        assert_eq!("simple".parse(), Ok(SummarizeStyle::Eli5));
+        assert_eq!("structure".parse(), Ok(SummarizeStyle::Outline));
+    }
+
+    use std::cell::RefCell;
+    use std::sync::Arc;
+
+    use serde_json::{Value, json};
+
+    use crate::ai::AiBridge;
+    use crate::config::AiSettings;
+    use crate::transcript::TranscriptStore;
+
+    /// Minimal `AiHttp` stub: replies to the Ollama version probe and captures the
+    /// chat request body so prompt construction can be asserted.
+    struct StubHttp {
+        last_chat_body: RefCell<Option<Value>>,
+        reply: String,
+    }
+
+    impl StubHttp {
+        fn new(reply: &str) -> Self {
+            Self {
+                last_chat_body: RefCell::new(None),
+                reply: reply.to_string(),
+            }
+        }
+    }
+
+    impl AiHttp for StubHttp {
+        fn get_json(&self, _url: &str, _headers: &[(String, String)]) -> Result<Value> {
+            Ok(json!({"version": "test"}))
+        }
+
+        fn post_json(
+            &self,
+            url: &str,
+            _headers: &[(String, String)],
+            body: &Value,
+        ) -> Result<Value> {
+            if url.ends_with("api/chat") {
+                *self.last_chat_body.borrow_mut() = Some(body.clone());
+            }
+            Ok(json!({
+                "model": "stub-model",
+                "message": {"role": "assistant", "content": self.reply.clone()}
+            }))
+        }
+    }
+
+    fn orchestrator() -> SummarizeOrchestrator {
+        let root =
+            std::env::temp_dir().join(format!("archon-summarize-test-{}", uuid::Uuid::new_v4()));
+        let store = TranscriptStore::new(root).expect("transcript store");
+        let bridge = AiBridge::from_settings(&AiSettings::default(), Arc::new(store));
+        SummarizeOrchestrator::from_settings(SummarizeSettings::default(), Arc::new(bridge))
+    }
+
+    #[test]
+    fn summarize_rejects_empty_content() {
+        let orch = orchestrator();
+        let request = SummarizeRequest::new("   ");
+        let stub = StubHttp::new("ignored");
+        let err = orch.summarize_with_http(&request, &stub).unwrap_err();
+        assert!(err.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn summarize_rejects_oversized_content() {
+        let settings = SummarizeSettings {
+            max_content_length: 10,
+            ..Default::default()
+        };
+        let bridge = {
+            let root = std::env::temp_dir()
+                .join(format!("archon-summarize-test-{}", uuid::Uuid::new_v4()));
+            let store = TranscriptStore::new(root).unwrap();
+            AiBridge::from_settings(&AiSettings::default(), Arc::new(store))
+        };
+        let orch = SummarizeOrchestrator::from_settings(settings, Arc::new(bridge));
+        let request = SummarizeRequest::new("this content is definitely longer than ten");
+        let stub = StubHttp::new("ignored");
+        let err = orch.summarize_with_http(&request, &stub).unwrap_err();
+        assert!(err.to_string().contains("exceeds maximum"));
+    }
+
+    #[test]
+    fn summarize_when_disabled_bails() {
+        let settings = SummarizeSettings {
+            enabled: false,
+            ..Default::default()
+        };
+        let bridge = {
+            let root = std::env::temp_dir()
+                .join(format!("archon-summarize-test-{}", uuid::Uuid::new_v4()));
+            let store = TranscriptStore::new(root).unwrap();
+            AiBridge::from_settings(&AiSettings::default(), Arc::new(store))
+        };
+        let orch = SummarizeOrchestrator::from_settings(settings, Arc::new(bridge));
+        let stub = StubHttp::new("ignored");
+        let err = orch
+            .summarize_with_http(&SummarizeRequest::new("hello"), &stub)
+            .unwrap_err();
+        assert!(err.to_string().contains("disabled"));
+    }
+
+    #[test]
+    fn summarize_builds_prompt_and_computes_metrics() {
+        let orch = orchestrator();
+        let request = SummarizeRequest::new("alpha beta gamma delta")
+            .with_style(SummarizeStyle::KeyPoints)
+            .with_language("French")
+            .with_title("My Page")
+            .with_url("https://example.com");
+        let stub = StubHttp::new("- one\n- two");
+
+        let response = orch.summarize_with_http(&request, &stub).expect("summarizes");
+
+        assert_eq!(response.summary, "- one\n- two");
+        assert_eq!(response.style, SummarizeStyle::KeyPoints);
+        assert_eq!(response.original_length, "alpha beta gamma delta".len());
+        assert!(response.compression_ratio > 0.0);
+        let metadata = response.metadata.expect("metadata included");
+        assert_eq!(metadata.word_count, 4);
+        assert_eq!(metadata.title.as_deref(), Some("My Page"));
+
+        // The prompt sent to the model should carry the style, language, and
+        // metadata constraints we configured.
+        let body = stub.last_chat_body.borrow().clone().expect("chat called");
+        let serialized = body.to_string();
+        assert!(serialized.contains("French"));
+        assert!(serialized.contains("My Page"));
+        assert!(serialized.contains("alpha beta gamma delta"));
+    }
 }

@@ -2,7 +2,10 @@ use std::{env, fs, path::PathBuf};
 
 use crate::{
     Launcher,
-    ai::{AiAttachment, AiAttachmentKind, AiChatPrompt},
+    agent::BrowserAgent,
+    ai::{AiAttachment, AiAttachmentKind, AiChatPrompt, AiBridge, BlockingAiHttp},
+    automation::AutomationOrchestrator,
+    browser::CdpBrowser,
     config::{EngineKind, LaunchMode, LaunchRequest},
     crypto::DomainResolution,
     profile::ProfileBadge,
@@ -83,6 +86,44 @@ pub struct Cli {
     /// Perform an Arc web search with AI-grounded response and exit.
     #[arg(long, value_name = "QUERY")]
     pub search: Option<String>,
+
+    /// Run the browser agent toward a natural-language GOAL and exit.
+    #[arg(long, value_name = "GOAL")]
+    pub agent: Option<String>,
+
+    /// Optional starting URL for the agent.
+    #[arg(long, value_name = "URL")]
+    pub agent_url: Option<String>,
+
+    /// Maximum number of agent steps.
+    #[arg(long, value_name = "N", default_value_t = 10)]
+    pub agent_max_steps: usize,
+
+    /// Perform real browser actions instead of a dry-run preview.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub agent_execute: bool,
+
+    /// Auto-approve high-risk agent actions without prompting (use with care).
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub agent_yes: bool,
+
+    /// Show the agent browser window (default headless).
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub agent_headful: bool,
+
+    /// Attach to the running Archon browser (automation.remote_debug_port)
+    /// instead of launching a dedicated headless instance.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub agent_attach: bool,
+
+    /// Override AI provider for --agent (defaults to configured provider).
+    #[arg(long, value_name = "NAME")]
+    pub agent_provider: Option<String>,
+
+    /// Run as an MCP server over stdio (JSON-RPC 2.0) so external MCP clients
+    /// (Claude Code, Codex, Gemini, Jarvis, …) can drive the browser.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub mcp: bool,
 
     /// List N8N workflows from the configured instance and exit.
     #[arg(long, action = ArgAction::SetTrue)]
@@ -876,6 +917,173 @@ fn print_diagnostics(launcher: &Launcher) -> Result<()> {
     Ok(())
 }
 
+fn run_agent(launcher: &Launcher, cli: &Cli, goal: &str) -> Result<()> {
+    let settings = launcher.settings();
+
+    if cli.agent_execute && !settings.automation.enabled {
+        bail!(
+            "--agent-execute requires automation to be enabled in config \
+             (set automation.enabled = true). Omit --agent-execute for a dry-run preview."
+        );
+    }
+
+    let transcripts = launcher.ai().transcript_store();
+    let transcript_root = transcripts.root().to_path_buf();
+    let agent_transcript_dir = transcript_root.join("agents");
+    let artifacts_dir = transcript_root.join("agent-artifacts");
+
+    let ai = std::sync::Arc::new(AiBridge::from_settings(&settings.ai, transcripts));
+    let orchestrator = std::sync::Arc::new(AutomationOrchestrator::from_settings(
+        settings.automation.clone(),
+        ai,
+    ));
+
+    let mode = if cli.agent_execute {
+        "execute"
+    } else {
+        "preview (dry-run)"
+    };
+    println!("Agent goal: {goal}");
+    println!("Mode: {mode} | max steps: {}", cli.agent_max_steps);
+    if let Some(url) = &cli.agent_url {
+        println!("Start URL: {url}");
+    }
+
+    let driver = if cli.agent_attach {
+        let port = settings.automation.remote_debug_port;
+        let user_data_dir = settings
+            .resolve_profile_root()
+            .ok()
+            .map(|root| root.join(&cli.profile));
+        let ws_url = CdpBrowser::devtools_ws_url(port, user_data_dir.as_deref()).with_context(|| {
+            format!(
+                "could not find a debuggable Archon browser on port {port}. \
+                 Launch Archon first (e.g. `archon --engine edge --execute`) so it \
+                 exposes the CDP port, then retry with --agent-attach."
+            )
+        })?;
+        println!("Attaching to running browser at {ws_url}");
+        CdpBrowser::connect(&ws_url, artifacts_dir)
+            .context("failed to attach to the running Archon browser")?
+    } else {
+        CdpBrowser::launch(cli.agent_headful, artifacts_dir)
+            .context("failed to launch the agent browser (is Chromium installed?)")?
+    };
+
+    let agent = BrowserAgent::new(
+        orchestrator,
+        cli.agent_max_steps,
+        cli.agent_execute,
+        cli.agent_yes,
+        Some(agent_transcript_dir),
+    );
+
+    let http = BlockingAiHttp::default();
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let outcome = agent.run(
+        goal,
+        cli.agent_url.as_deref(),
+        &driver,
+        cli.agent_provider.as_deref(),
+        &http,
+        &cancel,
+    )?;
+
+    println!("\nSteps:");
+    if outcome.steps.is_empty() {
+        println!("  (none)");
+    }
+    for step in &outcome.steps {
+        let status = if step.result.success { "ok" } else { "failed" };
+        let detail = step
+            .action
+            .selector
+            .as_deref()
+            .or(step.action.value.as_deref())
+            .unwrap_or("");
+        println!(
+            "  {}. {:?} {} [{status}]",
+            step.index, step.action.action_type, detail
+        );
+        if let Some(data) = &step.result.data {
+            println!("      {data}");
+        }
+        if let Some(err) = &step.result.error {
+            println!("      error: {err}");
+        }
+    }
+
+    println!(
+        "\n{} {}",
+        if outcome.completed {
+            "Completed:"
+        } else {
+            "Ended:"
+        },
+        outcome.summary
+    );
+
+    Ok(())
+}
+
+fn run_mcp(launcher: &Launcher, cli: &Cli) -> Result<()> {
+    use crate::mcp_server::{BrowserToolbox, serve_stdin};
+
+    let settings = launcher.settings();
+    let transcripts = launcher.ai().transcript_store();
+    let transcript_root = transcripts.root().to_path_buf();
+    let agent_transcript_dir = transcript_root.join("agents");
+    let artifacts_dir = transcript_root.join("agent-artifacts");
+
+    let ai = std::sync::Arc::new(AiBridge::from_settings(&settings.ai, transcripts));
+    let orchestrator = std::sync::Arc::new(AutomationOrchestrator::from_settings(
+        settings.automation.clone(),
+        ai,
+    ));
+
+    // Browser lifecycle captured for the lazy driver factory: either attach to
+    // the user's running hardened session or launch a dedicated instance.
+    let attach = cli.agent_attach;
+    let headful = cli.agent_headful;
+    let port = settings.automation.remote_debug_port;
+    let user_data_dir = settings
+        .resolve_profile_root()
+        .ok()
+        .map(|root| root.join(&cli.profile));
+    let factory_artifacts = artifacts_dir.clone();
+
+    let driver_factory: crate::mcp_server::DriverFactory = Box::new(move || {
+        let driver: Box<dyn crate::browser::BrowserDriver> = if attach {
+            let ws_url = CdpBrowser::devtools_ws_url(port, user_data_dir.as_deref())
+                .with_context(|| {
+                    format!(
+                        "could not find a debuggable Archon browser on port {port}. \
+                         Launch Archon first (e.g. `archon --engine edge --execute`) so it \
+                         exposes the CDP port, then run the MCP server with --agent-attach."
+                    )
+                })?;
+            Box::new(CdpBrowser::connect(&ws_url, factory_artifacts.clone())?)
+        } else {
+            Box::new(CdpBrowser::launch(headful, factory_artifacts.clone())?)
+        };
+        Ok(driver)
+    });
+
+    let toolbox = BrowserToolbox::new(
+        orchestrator,
+        Some(agent_transcript_dir),
+        cli.agent_provider.clone(),
+        driver_factory,
+    );
+
+    info!(
+        attach,
+        automation_enabled = settings.automation.enabled,
+        "Starting Archon MCP server on stdio"
+    );
+    serve_stdin(toolbox)
+}
+
 pub fn run() -> Result<()> {
     let cli = Cli::parse();
     let config_path = match cli.config.clone() {
@@ -889,6 +1097,11 @@ pub fn run() -> Result<()> {
         eprintln!("warning: failed to initialise tracing subscriber: {err}");
     }
     let mut launcher = Launcher::bootstrap(Some(config_path))?;
+
+    if cli.mcp {
+        run_mcp(&launcher, &cli)?;
+        return Ok(());
+    }
 
     if cli.sync_ghostdns_policy {
         let report = launcher.sync_ghostdns_policy(cli.force)?;
@@ -1074,6 +1287,14 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(goal) = cli.agent.clone() {
+        if goal.trim().is_empty() {
+            bail!("--agent requires a non-empty GOAL");
+        }
+        run_agent(&launcher, &cli, &goal)?;
+        return Ok(());
+    }
+
     if cli.n8n_health {
         let statuses = launcher.n8n().health_report();
         println!("N8N Health Report");
@@ -1187,6 +1408,7 @@ pub fn run() -> Result<()> {
             policy_path: None,
             xdg_config_home: None,
             open_url: None,
+            remote_debug_port: None,
         };
         launcher.run(request)?
     };
@@ -1275,6 +1497,7 @@ fn handle_target(launcher: &mut Launcher, cli: &Cli, target: &str) -> Result<boo
                 policy_path: None,
                 xdg_config_home: None,
                 open_url: Some(destination.clone()),
+                remote_debug_port: None,
             };
             let outcome = launcher
                 .run(request)
@@ -1300,13 +1523,9 @@ fn handle_target(launcher: &mut Launcher, cli: &Cli, target: &str) -> Result<boo
 
 fn parse_ens_invocation(target: &str) -> Option<EnsInvocation> {
     let trimmed = target.trim();
-    let payload = if let Some(rest) = trimmed.strip_prefix("ens://") {
-        rest
-    } else if let Some(rest) = trimmed.strip_prefix("ens:") {
-        rest
-    } else {
-        return None;
-    };
+    let payload = trimmed
+        .strip_prefix("ens://")
+        .or_else(|| trimmed.strip_prefix("ens:"))?;
 
     let payload = payload.trim_start_matches('/');
     if payload.is_empty() {

@@ -139,3 +139,90 @@ pub fn summarize_policy(value: &Value) -> PolicySummary {
     }
     summary
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    const TEST_DOH: &str = "https://10.0.0.1:443/dns-query";
+
+    #[test]
+    fn embedded_template_is_valid_json() {
+        let parsed: Value =
+            serde_json::from_str(CHROMIUM_MAX_POLICY_TEMPLATE).expect("template parses");
+        assert!(parsed.is_object());
+    }
+
+    #[test]
+    fn template_uses_canonical_chromium_doh_keys() {
+        // Chromium ignores unknown keys silently; the all-caps "DNS" spelling is
+        // not a real policy. Guard against regressing to it.
+        let map = serde_json::from_str::<Value>(CHROMIUM_MAX_POLICY_TEMPLATE).unwrap();
+        let obj = map.as_object().unwrap();
+        assert!(obj.contains_key("DnsOverHttpsMode"));
+        assert!(!obj.contains_key("DNSOverHttpsMode"));
+        assert!(!obj.contains_key("DNSOverHttpsTemplates"));
+    }
+
+    #[test]
+    fn creates_then_reports_unchanged() {
+        let dir = tempdir().unwrap();
+        let first =
+            ensure_chromium_policy(dir.path(), TEST_DOH, PolicyProfile::Hardened).unwrap();
+        assert_eq!(first.action, PolicyWriteAction::Created);
+        assert!(first.path.exists());
+
+        let second =
+            ensure_chromium_policy(dir.path(), TEST_DOH, PolicyProfile::Hardened).unwrap();
+        assert_eq!(second.action, PolicyWriteAction::Unchanged);
+        assert_eq!(first.path, second.path);
+    }
+
+    #[test]
+    fn rewrites_when_doh_template_changes() {
+        let dir = tempdir().unwrap();
+        ensure_chromium_policy(dir.path(), TEST_DOH, PolicyProfile::Hardened).unwrap();
+        let updated = ensure_chromium_policy(
+            dir.path(),
+            "https://192.168.0.1:443/dns-query",
+            PolicyProfile::Hardened,
+        )
+        .unwrap();
+        assert_eq!(updated.action, PolicyWriteAction::Updated);
+    }
+
+    #[test]
+    fn hardened_profile_keeps_aggressive_defaults() {
+        let dir = tempdir().unwrap();
+        let outcome =
+            ensure_chromium_policy(dir.path(), TEST_DOH, PolicyProfile::Hardened).unwrap();
+        let summary = summarize_policy(&load_policy(&outcome.path).unwrap());
+        assert_eq!(summary.doh_mode.as_deref(), Some("automatic"));
+        assert_eq!(summary.doh_template.as_deref(), Some(TEST_DOH));
+        assert_eq!(summary.safe_browsing_level, Some(2));
+        assert_eq!(summary.password_manager_enabled, Some(false));
+        assert_eq!(summary.search_suggest_enabled, Some(false));
+    }
+
+    #[test]
+    fn default_profile_relaxes_convenience_settings() {
+        let dir = tempdir().unwrap();
+        let outcome =
+            ensure_chromium_policy(dir.path(), TEST_DOH, PolicyProfile::Default).unwrap();
+        let summary = summarize_policy(&load_policy(&outcome.path).unwrap());
+        assert_eq!(summary.safe_browsing_level, Some(1));
+        assert_eq!(summary.password_manager_enabled, Some(true));
+        assert_eq!(summary.leak_detection_enabled, Some(true));
+        assert_eq!(summary.search_suggest_enabled, Some(true));
+        assert_eq!(summary.block_external_extensions, Some(false));
+    }
+
+    #[test]
+    fn load_policy_rejects_malformed_json() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("broken.json");
+        fs::write(&path, "{ not valid json").unwrap();
+        assert!(load_policy(&path).is_err());
+    }
+}

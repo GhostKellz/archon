@@ -5,7 +5,7 @@
 Archon is now a **fully functional crypto-native Chromium browser** with:
 
 ✅ **ENS** (.eth) - Ethereum Name Service
-✅ **Hedera** (.hbar, .boo) - Hedera Hashgraph names
+⚠️ **Hedera** (.hbar, .boo) - Hedera Hashgraph names (experimental; API not yet stable)
 ✅ **XRPL** (.xrp) - XRP Ledger names
 ✅ **Unstoppable Domains** (.crypto, .nft, .wallet, .x, .zil, and 10+ more TLDs)
 ✅ **IPFS Integration** - Automatic contenthash resolution
@@ -262,7 +262,7 @@ ls ~/.cache/archon/ens.sqlite
 
 ## Documentation
 
-- **Full docs**: `docs/crypto_domains.md`
+- **Full docs**: `docs/crypto/domains.md`
 - **Testing guide**: `TESTING_GUIDE.md`
 - **Implementation**: `CRYPTO_DOMAINS_IMPLEMENTATION.md`
 - **README**: `README.md`
@@ -275,7 +275,7 @@ ls ~/.cache/archon/ens.sqlite
 |-----------|--------|--------|
 | Cached resolution | <1ms | ✅ Implemented |
 | ENS (uncached) | <500ms | ✅ Implemented |
-| Hedera (uncached) | <400ms | ✅ Implemented |
+| Hedera (uncached) | <400ms | ⚠️ Experimental |
 | XRPL (uncached) | <600ms | ✅ Implemented |
 | AI response (local) | <2s | ✅ Ready |
 | AI response (cloud) | <3s | ✅ Ready |

@@ -1,5 +1,7 @@
+pub mod agent;
 pub mod ai;
 pub mod automation;
+pub mod browser;
 pub mod cli;
 pub mod config;
 pub mod crypto;
@@ -9,14 +11,19 @@ pub mod ghostdns;
 pub mod host;
 pub mod ipfs;
 pub mod mcp;
+pub mod mcp_server;
 pub mod n8n;
 pub mod policy;
+pub(crate) mod process_util;
 pub mod profile;
 pub mod research;
 pub mod search;
 pub mod summarize;
 pub mod sync;
+pub(crate) mod sync_util;
 pub mod telemetry;
+#[cfg(test)]
+mod test_util;
 pub mod theme;
 pub mod transcript;
 pub mod ui;
@@ -193,7 +200,7 @@ impl Launcher {
         let ai_host = AiHost::from_settings(&settings.ai_host)?;
         let crypto = CryptoStack::from_settings(&settings.crypto);
         let ghostdns = GhostDns::from_settings(&settings.ghostdns)?;
-        let mcp = McpOrchestrator::from_settings(settings.mcp.clone());
+        let mcp = McpOrchestrator::from_settings(settings.mcp.clone())?;
         let n8n = N8nOrchestrator::from_settings(settings.n8n.clone());
         let arc = ArcOrchestrator::from_settings(settings.arc.clone());
         let arc_arc = Arc::new(arc.clone());
@@ -380,6 +387,16 @@ impl Launcher {
         }
         let engine_kind = request.engine.unwrap_or(self.settings.default_engine);
         let mode = request.mode;
+
+        // Expose a fixed CDP remote-debugging port so the agent can attach to
+        // this visible hardened session (see AutomationSettings::remote_debug_port).
+        // A configured port of 0 keeps the legacy ephemeral behaviour.
+        if request.remote_debug_port.is_none() {
+            let port = self.settings.automation.remote_debug_port;
+            if port != 0 {
+                request.remote_debug_port = Some(port);
+            }
+        }
 
         let span = info_span!(
             "launcher.run",
@@ -603,6 +620,7 @@ impl Launcher {
             policy_path: None,
             xdg_config_home: None,
             open_url: None,
+            remote_debug_port: None,
         };
         self.run(request)
     }

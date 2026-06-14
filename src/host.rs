@@ -4,6 +4,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     process::{Command, Output},
+    time::Duration,
 };
 
 use anyhow::{Context, Result};
@@ -12,6 +13,7 @@ use serde_json::json;
 
 use crate::config::{AiHostSettings, AiSettings, McpSettings};
 use crate::ghostdns::{ConfigWriteAction, ConfigWriteOutcome};
+use crate::process_util::run_with_timeout;
 
 /// Manages on-disk resources for the Archon AI native messaging host.
 #[derive(Debug, Clone)]
@@ -378,10 +380,12 @@ fn systemctl_user(args: &[&str]) -> Result<Option<Output>> {
         command.arg(arg);
     }
     let joined = args.join(" ");
-    match command.output() {
+    match run_with_timeout(command, Duration::from_secs(10)) {
         Ok(output) => Ok(Some(output)),
-        Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err).context(format!("failed to execute systemctl --user {joined}")),
+        Err(err) => match err.downcast_ref::<std::io::Error>() {
+            Some(io_err) if io_err.kind() == ErrorKind::NotFound => Ok(None),
+            _ => Err(err).context(format!("failed to execute systemctl --user {joined}")),
+        },
     }
 }
 

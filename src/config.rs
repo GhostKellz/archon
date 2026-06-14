@@ -1042,6 +1042,8 @@ pub struct CryptoResolverSettings {
     pub ud_endpoint: String,
     #[serde(default)]
     pub ud_api_key_env: Option<String>,
+    /// EXPERIMENTAL: Hedera Name Service (`.hbar` / `.boo`) lacks a stable public
+    /// resolver API. This endpoint and its response schema may change.
     #[serde(default = "CryptoResolverSettings::default_hedera_endpoint")]
     pub hedera_endpoint: String,
     #[serde(default)]
@@ -1272,6 +1274,10 @@ pub struct LaunchRequest {
     pub policy_path: Option<PathBuf>,
     pub xdg_config_home: Option<PathBuf>,
     pub open_url: Option<String>,
+    /// When set, the Chromium engine exposes this fixed CDP remote-debugging
+    /// port (plus `--remote-allow-origins=*`) so the agent can attach to the
+    /// user's visible hardened session. `None` keeps the ephemeral port `0`.
+    pub remote_debug_port: Option<u16>,
 }
 
 impl Default for LaunchRequest {
@@ -1287,6 +1293,7 @@ impl Default for LaunchRequest {
             policy_path: None,
             xdg_config_home: None,
             open_url: None,
+            remote_debug_port: None,
         }
     }
 }
@@ -1563,6 +1570,16 @@ pub struct AutomationSettings {
     /// Sandbox mode - preview actions without executing.
     #[serde(default = "bool_true")]
     pub sandbox_mode: bool,
+    /// CDP remote-debugging port the launched engine exposes and the agent
+    /// attaches to (shared source of truth between `engine.rs` and `browser.rs`).
+    #[serde(default = "AutomationSettings::default_remote_debug_port")]
+    pub remote_debug_port: u16,
+    /// Permit High/Critical-risk actions to run unattended through the MCP
+    /// server (`archon --mcp`), where no human is present to confirm. Disabled
+    /// by default; the interactive CLI/sidebar paths keep their own prompts and
+    /// are unaffected by this flag.
+    #[serde(default)]
+    pub allow_unattended_high_risk: bool,
 }
 
 impl AutomationSettings {
@@ -1572,6 +1589,10 @@ impl AutomationSettings {
 
     fn default_timeout() -> u32 {
         30
+    }
+
+    fn default_remote_debug_port() -> u16 {
+        9222
     }
 }
 
@@ -1586,6 +1607,8 @@ impl Default for AutomationSettings {
             action_timeout_seconds: Self::default_timeout(),
             log_all_actions: true,
             sandbox_mode: true,
+            remote_debug_port: Self::default_remote_debug_port(),
+            allow_unattended_high_risk: false,
         }
     }
 }

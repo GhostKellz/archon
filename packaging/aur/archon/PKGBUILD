@@ -67,8 +67,8 @@ package() {
 
     install -Dm644 "policy/chromium_max_policies.json" \
         "${pkgdir}/usr/share/archon/policy/chromium_max_policies.json"
-    install -Dm644 "docs/chromium_max.md" \
-        "${pkgdir}/usr/share/doc/${pkgname}/chromium_max.md"
+    install -Dm644 "docs/architecture/chromium-max.md" \
+        "${pkgdir}/usr/share/doc/${pkgname}/chromium-max.md"
 
     local sizes=(16 24 32 48 64 128 256 512)
     local variants=(test-alt proto nobak mint ghost)

@@ -2,6 +2,7 @@
 name = "archon-bench"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.90"
 authors = ["GhostKellz <dev@ghostkellz.sh>"]
 description = "Benchmark harness for the Archon browser stack"
 license = "MIT"

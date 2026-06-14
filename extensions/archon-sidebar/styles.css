@@ -195,6 +195,41 @@ textarea:focus {
   align-items: center;
 }
 
+/* Page-context controls */
+.page-context-control {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 0.4rem;
+}
+
+.page-context-toggle {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+  font-size: 0.8rem;
+  color: var(--accent-ghost, #a9b1d6);
+  cursor: pointer;
+  user-select: none;
+}
+
+.page-context-btn {
+  padding: 0.3rem 0.6rem;
+  font-size: 0.8rem;
+  border-radius: 6px;
+  background: rgba(18, 20, 29, 0.8);
+  border: 1px solid rgba(127, 90, 240, 0.4);
+  color: inherit;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+
+.page-context-btn:hover {
+  border-color: var(--tokyonight-purple);
+  background: rgba(127, 90, 240, 0.15);
+}
+
 /* Voice Input Button */
 .voice-btn {
   padding: 0.5rem;
@@ -348,6 +383,22 @@ button:hover {
 
 .log-entry.assistant {
   border-color: rgba(127, 90, 240, 0.45);
+}
+
+.log-entry.assistant.streaming {
+  border-style: dashed;
+}
+
+.log-entry-meta {
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  opacity: 0.6;
+  margin-bottom: 0.4rem;
+}
+
+.log-entry-body {
+  white-space: pre-wrap;
 }
 
 .log-entry.error {
@@ -1569,4 +1620,191 @@ body[data-theme="archon-light"] {
 
 .n8n-action span:last-child {
   text-align: center;
+}
+
+/* Citation chips */
+.citation-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+}
+
+.citation-chip {
+  font-size: 0.7rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(127, 90, 240, 0.18);
+  color: #b5a0f5;
+  border: 1px solid rgba(127, 90, 240, 0.4);
+  cursor: pointer;
+}
+
+.citation-chip:hover {
+  background: rgba(127, 90, 240, 0.32);
+}
+
+/* Follow-up suggestion chips */
+.followups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0.5rem 0;
+}
+
+.followup-chip {
+  font-size: 0.75rem;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(72, 199, 142, 0.12);
+  color: #7be3b0;
+  border: 1px solid rgba(72, 199, 142, 0.35);
+  cursor: pointer;
+  text-align: left;
+}
+
+.followup-chip:hover {
+  background: rgba(72, 199, 142, 0.25);
+}
+
+/* Agent Tab */
+.agent-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.agent-form textarea {
+  resize: vertical;
+}
+
+.agent-options {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.agent-options input[type="url"] {
+  flex: 1;
+}
+
+.agent-steps {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: #8086a2;
+  white-space: nowrap;
+}
+
+.agent-steps input[type="number"] {
+  width: 4rem;
+}
+
+.agent-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.agent-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.8rem;
+  color: #c5c9e0;
+}
+
+.agent-status {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.5rem;
+  font-size: 0.8rem;
+  background: rgba(127, 140, 255, 0.15);
+  border: 1px solid rgba(127, 140, 255, 0.3);
+  color: #a0b0ff;
+}
+
+.agent-status[data-tone="ok"] {
+  background: rgba(72, 199, 142, 0.15);
+  border-color: rgba(72, 199, 142, 0.3);
+  color: #7be3b0;
+}
+
+.agent-status[data-tone="error"] {
+  background: rgba(255, 99, 132, 0.15);
+  border-color: rgba(255, 99, 132, 0.3);
+  color: #ff8ba7;
+}
+
+.agent-steps-list {
+  list-style: none;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.agent-step {
+  border: 1px solid rgba(127, 90, 240, 0.25);
+  border-left-width: 3px;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.7rem;
+  background: rgba(18, 20, 29, 0.7);
+}
+
+.agent-step.ok {
+  border-left-color: #48c78e;
+}
+
+.agent-step.failed {
+  border-left-color: #ff6384;
+}
+
+.agent-step-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  color: #d6d9f4;
+}
+
+.agent-step-badge {
+  font-size: 0.68rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+
+.agent-step-badge.ok {
+  background: rgba(72, 199, 142, 0.2);
+  color: #7be3b0;
+}
+
+.agent-step-badge.failed {
+  background: rgba(255, 99, 132, 0.2);
+  color: #ff8ba7;
+}
+
+.agent-step-detail {
+  margin-top: 0.35rem;
+  font-size: 0.76rem;
+  color: #9aa0bd;
+  word-break: break-word;
+}
+
+.agent-summary {
+  margin-top: 0.75rem;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid rgba(127, 90, 240, 0.35);
+  border-radius: 0.6rem;
+  background: rgba(18, 20, 29, 0.85);
+}
+
+.agent-summary p {
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+  color: #c5c9e0;
 }

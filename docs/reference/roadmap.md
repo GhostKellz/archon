@@ -2,13 +2,13 @@
 
 _Revision: 2025-10-26_
 
-This roadmap kicks in once the MVP criteria in `docs/MVP.md` are met. It aligns with the Chromium Max blueprint and user feedback to scale Archon into a production-ready browser ecosystem.
+This roadmap kicks in once the MVP criteria in `docs/architecture/overview.md` are met. It aligns with the Chromium Max blueprint and user feedback to scale Archon into a production-ready browser ecosystem.
 
 ---
 
 ## Phase A – MVP Completion (In-flight)
 
-> Target: ✅ Achieve all items in `docs/MVP.md` (launcher, policies, GhostDNS, AI host/sidebar, archon-bench, reproducible builds).
+> Target: ✅ Achieve all items in `docs/architecture/overview.md` (launcher, policies, GhostDNS, AI host/sidebar, archon-bench, reproducible builds).
 
 Deliverables:
 - `archon` launcher with flag autodetect + policy injection.
@@ -49,7 +49,7 @@ Goal: Deliver a reproducible `chromium-max` source package and polish installer 
 - [x] EDNS Client Subnet toggles.
 - [x] Local IPFS gateway integration for ENS contenthash resolution.
 - [x] Fallback profiles for custom upstream DoH/DoT providers (Cloudflare, Family, Google, Quad9, Mullvad built-ins with override support).
-- [ ] Prometheus dashboards packaged under `docs/observability.md`.
+- [ ] Prometheus dashboards packaged under `docs/operations/observability.md`.
 
 ### C2. ENS/UD UX
 - [x] Omnibox keyword `ens:<name>` with autocomplete.
@@ -104,7 +104,7 @@ Goal: Deliver a reproducible `chromium-max` source package and polish installer 
 
 ## Phase G – Security & Compliance
 
-- [ ] Threat modeling document (`docs/security.md`).
+- [ ] Threat modeling document (`docs/security/overview.md`).
 - [ ] Regular dependency audit workflow (cargo audit, npm audit, osv-scanner).
 - [ ] Hardened AppArmor/SELinux profiles for GhostDNS + archon-host.
 - [ ] Binary transparency log (Sigstore) for all public releases.

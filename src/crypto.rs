@@ -20,6 +20,7 @@ use url::Url;
 use crate::config::{
     CryptoNetworkConfig, CryptoNetworkKind, CryptoResolverSettings, CryptoSettings,
 };
+use crate::sync_util::LockResultExt;
 
 const CONTENTHASH_KEY: &str = "contenthash";
 const CONTENTHASH_RAW_KEY: &str = "contenthash.raw";
@@ -108,7 +109,7 @@ impl ResolverCache {
             .inner
             .conn
             .lock()
-            .expect("resolver cache mutex poisoned");
+            .recover();
 
         let mut stmt = guard
             .prepare("SELECT payload, updated_at FROM resolutions WHERE name = ?1 AND service = ?2")
@@ -160,7 +161,7 @@ impl ResolverCache {
             .inner
             .conn
             .lock()
-            .expect("resolver cache mutex poisoned");
+            .recover();
         guard
             .execute(
                 "INSERT INTO resolutions (name, service, payload, updated_at)
@@ -180,7 +181,7 @@ impl ResolverCache {
             .inner
             .conn
             .lock()
-            .expect("resolver cache mutex poisoned");
+            .recover();
         guard
             .execute(
                 "UPDATE resolutions SET updated_at = updated_at - ?1 WHERE name = ?2 AND service = ?3",
@@ -253,7 +254,7 @@ impl CryptoStack {
     }
 
     pub fn resolve_name_default(&self, name: &str) -> Result<DomainResolution> {
-        let client = BlockingResolverHttp::default();
+        let client = BlockingResolverHttp::new()?;
         self.resolve_name(name, &client)
     }
 
@@ -520,6 +521,13 @@ impl CryptoStack {
         })
     }
 
+    /// Resolve a Hedera Name Service (`.hbar` / `.boo`) domain.
+    ///
+    /// EXPERIMENTAL: Hedera Name Service does not yet have a stable, public
+    /// resolver API. This implementation targets a generic `{endpoint}/resolve/{name}`
+    /// shape against the configured `hedera_endpoint`; the request/response schema
+    /// may change once an official HNS API is finalized. Treat results as
+    /// best-effort until this resolver is promoted out of experimental status.
     fn resolve_hedera<T: DomainResolverHttp>(
         &self,
         name: &str,
@@ -527,8 +535,12 @@ impl CryptoStack {
     ) -> Result<DomainResolution> {
         let base = self.resolvers.hedera_endpoint.trim_end_matches('/');
 
-        // Hedera Name Service uses the format: resolve by domain name
-        // For now we use a placeholder API - in production this would be hashgraph.name or similar
+        warn!(
+            domain = name,
+            endpoint = base,
+            "Hedera Name Service resolver is experimental; response schema is not yet stable",
+        );
+
         let url = format!("{base}/resolve/{name}");
 
         let headers = if let Some(api_key_env) = self.resolvers.hedera_api_key_env.as_ref() {
@@ -688,13 +700,13 @@ pub struct BlockingResolverHttp {
     client: Client,
 }
 
-impl Default for BlockingResolverHttp {
-    fn default() -> Self {
+impl BlockingResolverHttp {
+    pub fn new() -> Result<Self> {
         let client = Client::builder()
             .user_agent("Archon/0.1 (crypto-resolver)")
             .build()
-            .expect("failed to build reqwest client");
-        Self { client }
+            .context("failed to build reqwest client for crypto resolver")?;
+        Ok(Self { client })
     }
 }
 
@@ -834,8 +846,8 @@ impl CryptoNetworkStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::EnvVarGuard;
     use std::cell::RefCell;
-    use std::sync::{Mutex, OnceLock};
     use tempfile::tempdir;
     use unsigned_varint::encode as varint_encode;
 
@@ -878,11 +890,6 @@ mod tests {
                 .iter()
                 .any(|issue| issue.contains("invalid RPC HTTP endpoint"))
         );
-    }
-
-    fn env_guard() -> &'static Mutex<()> {
-        static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
-        ENV_MUTEX.get_or_init(|| Mutex::new(()))
     }
 
     #[test]
@@ -1027,10 +1034,8 @@ mod tests {
         let mut settings = CryptoSettings::default();
         settings.resolvers.ud_api_key_env = Some("ARCHON_TEST_UD_KEY".into());
         let stack = CryptoStack::from_settings(&settings);
-        let _lock = env_guard().lock().unwrap();
-        unsafe {
-            std::env::remove_var("ARCHON_TEST_UD_KEY");
-        }
+        let mut env = EnvVarGuard::new();
+        env.remove("ARCHON_TEST_UD_KEY");
 
         // Ensure env var missing triggers helpful error.
         let stub = StubHttp::new(vec![]);
@@ -1044,11 +1049,8 @@ mod tests {
     fn resolve_unstoppable_uses_stubbed_json() {
         let mut settings = CryptoSettings::default();
         settings.resolvers.ud_api_key_env = Some("ARCHON_TEST_UD_KEY".into());
-        let _lock = env_guard().lock().unwrap();
-        let original = std::env::var("ARCHON_TEST_UD_KEY").ok();
-        unsafe {
-            std::env::set_var("ARCHON_TEST_UD_KEY", "dummy-key");
-        }
+        let mut env = EnvVarGuard::new();
+        env.set("ARCHON_TEST_UD_KEY", "dummy-key");
         let stack = CryptoStack::from_settings(&settings);
 
         let url = format!(
@@ -1070,14 +1072,5 @@ mod tests {
         assert_eq!(resolution.primary_address.as_deref(), Some("0xdeadbeef"));
         assert_eq!(resolution.service, DomainService::Unstoppable);
         assert!(resolution.records.contains_key("address.ETH"));
-        if let Some(value) = original {
-            unsafe {
-                std::env::set_var("ARCHON_TEST_UD_KEY", value);
-            }
-        } else {
-            unsafe {
-                std::env::remove_var("ARCHON_TEST_UD_KEY");
-            }
-        }
     }
 }

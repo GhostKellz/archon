@@ -7,7 +7,7 @@ Archon provides first-class support for crypto-native name services, enabling se
 | Service | TLDs | Description | Status |
 |---------|------|-------------|--------|
 | **ENS** | `.eth` | Ethereum Name Service - the most widely adopted blockchain naming system | ✅ Full Support |
-| **Hedera** | `.hbar`, `.boo` | Hedera Name Service for the Hedera Hashgraph network | ✅ Full Support |
+| **Hedera** | `.hbar`, `.boo` | Hedera Name Service for the Hedera Hashgraph network | ⚠️ Experimental |
 | **XRPL** | `.xrp` | XRP Ledger Name Service for the XRP ecosystem | ✅ Full Support |
 | **Unstoppable Domains** | `.crypto`, `.nft`, `.wallet`, `.x`, `.zil`, `.blockchain`, `.bitcoin`, `.dao`, `.888`, `.klever` | Multi-chain naming service supporting 700+ networks | ✅ Full Support |
 
@@ -177,6 +177,10 @@ Resolved domains include addresses for multiple chains:
 - **Explorer**: `https://app.ens.domains/<domain>`
 
 ### Hedera (.hbar, .boo)
+
+> **⚠️ Experimental:** Hedera Name Service does not yet expose a stable public
+> resolver API. The endpoint and response schema may change, and results should
+> be treated as best-effort until this resolver is promoted out of experimental status.
 
 - **Provider**: Hedera Mirror Node
 - **Records**: account_id, memo, public_key

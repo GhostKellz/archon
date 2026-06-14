@@ -1,6 +1,6 @@
 {
-  "DNSOverHttpsMode": "automatic",
-  "DNSOverHttpsTemplates": "https://127.0.0.1:443/dns-query",
+  "DnsOverHttpsMode": "automatic",
+  "DnsOverHttpsTemplates": "https://127.0.0.1:443/dns-query",
   "BrowserSignin": 0,
   "SyncDisabled": true,
   "SigninAllowed": false,
