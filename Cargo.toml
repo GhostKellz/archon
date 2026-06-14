@@ -42,7 +42,7 @@ unsigned-varint = "0.8"
 	infer = "0.15"
 quinn = { version = "0.11", features = ["rustls"] }
 rustls-pki-types = "1.12"
-dialoguer = { version = "0.11", default-features = false, features = ["editor", "fuzzy-select"] }
+dialoguer = { version = "0.12", default-features = false, features = ["editor", "fuzzy-select"] }
 once_cell = "1.19"
 tokio-stream = { version = "0.1", features = ["sync"] }
 tracing-appender = "0.2"
